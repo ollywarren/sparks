@@ -19,20 +19,44 @@ so the folder is trivial to point a script, a sync tool, or an AI agent at.
 ## Ideas as files
 
 Each idea is one file in `~/Notes/ideas/` (configurable), named
-`YYYY-MM-DD-HHMMSS-<slug-of-first-line>.md`:
+`YYYY-MM-DD-HHMMSS-<slug-of-first-line>.md`. Your captured text is saved
+verbatim under `## Idea`, followed by blank planning-brief headings to flesh
+out later — the seed of a future planning task, not just a note to self:
 
 ```markdown
 ---
 created: 2026-09-06T14:32:00+01:00
-tags: sparks, ideas
+tags: sparks,ideas
 ---
 
+## Idea
 Add a plugin marketplace page. #sparks #ideas
+
+## Context
+
+
+## Goal
+
+
+## Constraints
+
+
+## Open questions
+
+
+## Plan
+
 ```
 
 Hashtags in the text are lifted into the `tags:` line on save and left in the
-body too, so the file still reads naturally on its own — open it directly,
-`grep` the folder, or hand the whole directory to an agent.
+`## Idea` body too, so the file still reads naturally on its own — open it
+directly, `grep` the folder, or hand the whole directory to an agent to plan
+from.
+
+The five headings are a starting point, not a fixed schema — edit the
+`template_tail` heredoc in `bin/sparks`'s `new` case directly if you want
+different sections. This is deliberately not a plugin setting: it's five
+lines of bash, easier to change there than through a settings UI.
 
 ## Requirements
 
