@@ -64,7 +64,7 @@ omarchy plugin enable ollywarren.sparks right
 Then bind a key to pop the capture window, in `~/.config/hypr/bindings.lua`:
 
 ```lua
-o.bind("SUPER CTRL", "N", "New idea", "omarchy-shell shell toggle ollywarren.sparks '{}'")
+o.bind("SUPER + ALT + N", "New idea", "omarchy-shell shell toggle ollywarren.sparks")
 ```
 
 If you change the `ideasDir` setting (below) from its default, pass the same
@@ -72,7 +72,7 @@ folder in the keybinding's payload so the capture window writes to the same
 place the bar widget reads from:
 
 ```lua
-o.bind("SUPER CTRL", "N", "New idea",
+o.bind("SUPER + ALT + N", "New idea",
   [[omarchy-shell shell toggle ollywarren.sparks '{"ideasDir":"~/Documents/ideas"}']])
 ```
 
