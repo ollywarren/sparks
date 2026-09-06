@@ -88,6 +88,21 @@ case "$cmd" in
     rm -f -- "$real_file"
     ;;
 
+  open)
+    file="$dir"
+    [[ -n $file && -f $file ]] || fail "file not found: ${file:-<none>}"
+    # Prefer whatever the user has set as their markdown handler (Omawrite by
+    # default, but Obsidian/VSCode/anything else they've associated with
+    # text/markdown works too) over generic xdg-open, which resolves a .md
+    # file's mimetype as text/plain here and would hand it to $EDITOR instead.
+    desktop=$(xdg-mime query default text/markdown 2>/dev/null | head -1)
+    if [[ -n $desktop ]] && command -v gtk-launch >/dev/null 2>&1; then
+      gtk-launch "${desktop%.desktop}" "$file" >/dev/null 2>&1
+    else
+      xdg-open "$file" >/dev/null 2>&1
+    fi
+    ;;
+
   *)
     fail "unknown command: $cmd"
     ;;

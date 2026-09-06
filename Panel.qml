@@ -77,7 +77,11 @@ Panel {
   }
 
   function openIdea(file) {
-    Util.execArgv(["xdg-open", file])
+    // Routed through bin/sparks rather than a plain xdg-open: a .md file's
+    // detected mimetype here is text/plain, not text/markdown, so xdg-open
+    // would hand it to the text/plain default (nvim) instead of whatever
+    // markdown app the user actually has set (Omawrite by default).
+    Util.execArgv(["bash", root.scriptPath, "open", file])
   }
 
   function requestDelete(file) {
