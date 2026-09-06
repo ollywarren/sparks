@@ -80,8 +80,11 @@ Panel {
     // Routed through bin/sparks rather than a plain xdg-open: a .md file's
     // detected mimetype here is text/plain, not text/markdown, so xdg-open
     // would hand it to the text/plain default (nvim) instead of whatever
-    // markdown app the user actually has set (Omawrite by default).
-    Util.execArgv(["bash", root.scriptPath, "open", file])
+    // markdown app the user actually has set (Omawrite by default). Run as
+    // a tracked Process (not execDetached) so a failure lands in the log
+    // instead of vanishing silently.
+    openProc.command = ["bash", root.scriptPath, "open", file]
+    openProc.running = true
   }
 
   function requestDelete(file) {
@@ -99,6 +102,17 @@ Panel {
 
   function openIdeasFolder() {
     Util.execArgv(["xdg-open", root.ideasDir])
+  }
+
+  Process {
+    id: openProc
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var err = String(text || "").trim()
+        if (err) console.warn("ollywarren.sparks: open failed:", err)
+      }
+    }
   }
 
   onOpenedChanged: if (opened) refresh()
