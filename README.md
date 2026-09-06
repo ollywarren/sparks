@@ -7,6 +7,10 @@ a small floating window anywhere, any time, to type or dictate a new one.
 Ideas are saved as plain Markdown files — nothing proprietary, no database —
 so the folder is trivial to point a script, a sync tool, or an AI agent at.
 
+| Capture window | Bar list |
+|---|---|
+| ![The Sparks capture window, ready for a new idea](preview.png) | ![The Sparks bar popup listing logged ideas](preview-2.png) |
+
 ## How it works
 
 - **Bar icon** — click to see your ideas, newest first. Click a tag chip to
