@@ -127,7 +127,14 @@ Item {
 
           Flickable {
             id: editorFlick
-            anchors.fill: parent
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.topMargin: editorSurface.contentTopInset
+            anchors.leftMargin: editorSurface.contentLeftInset
+            anchors.rightMargin: editorSurface.contentRightInset
+            anchors.bottomMargin: editorSurface.contentBottomInset
             contentWidth: width
             contentHeight: Math.max(height, editor.implicitHeight)
             clip: true
