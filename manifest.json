@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "id": "ollywarren.sparks",
+  "name": "Sparks",
+  "version": "1.0.0",
+  "author": "Olly Warren",
+  "license": "MIT",
+  "description": "Quick-capture idea logging: a bar icon lists your ideas with tag filtering, and a keybinding pops a floating window to jot or dictate a new one. Ideas are saved as plain Markdown files.",
+  "kinds": [
+    "bar-widget",
+    "overlay"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml",
+    "overlay": "Capture.qml"
+  },
+  "barWidget": {
+    "displayName": "Sparks",
+    "description": "List of logged ideas with tag filtering and quick delete.",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "icon": "✨",
+      "ideasDir": "~/Notes/ideas",
+      "panelWidth": 380,
+      "maxListItems": 40
+    },
+    "schema": [
+      {
+        "key": "icon",
+        "type": "string",
+        "label": "Bar icon glyph"
+      },
+      {
+        "key": "ideasDir",
+        "type": "string",
+        "label": "Ideas folder",
+        "defaultValue": "~/Notes/ideas"
+      },
+      {
+        "key": "panelWidth",
+        "type": "integer",
+        "label": "Panel width (px)",
+        "min": 280,
+        "max": 700,
+        "step": 10,
+        "defaultValue": 380
+      },
+      {
+        "key": "maxListItems",
+        "type": "integer",
+        "label": "Max ideas shown in the list",
+        "min": 5,
+        "max": 200,
+        "step": 5,
+        "defaultValue": 40
+      }
+    ]
+  }
+}

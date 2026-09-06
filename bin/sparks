@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Backing store for the ollywarren.sparks plugin: list, create, and remove
+# idea .md files. Plain files are the source of truth -- no index/database --
+# so the folder stays greppable and safe to hand to an agent as-is.
+#
+# Usage:
+#   sparks list <dir>              -> JSON array, newest first
+#   sparks new  <dir> <text>       -> writes a new idea, prints {"file":...}
+#   sparks remove <dir> <file>     -> deletes one idea file
+set -euo pipefail
+
+fail() { echo "sparks: $*" >&2; exit 1; }
+
+cmd="${1:-}"
+dir="${2:-}"
+[[ -n $cmd ]] || fail "missing command"
+[[ -n $dir ]] || fail "missing ideas directory"
+
+# Emit one idea file as a JSON object: {file, title, created, mtime, tags}.
+# Frontmatter is our own fixed two-line format (see `new`), so plain
+# line-range sed/awk is enough -- no YAML parser needed.
+parse_one() {
+  local f="$1" created tags title mtime tags_json
+  created=$(sed -n '2,/^---$/{/^created: /{s/^created: //p}}' "$f" | head -1)
+  tags=$(sed -n '2,/^---$/{/^tags: /{s/^tags: //p}}' "$f" | head -1)
+  title=$(awk 'BEGIN{fm=0} /^---$/{fm++; next} fm>=2 && NF {print; exit}' "$f")
+  mtime=$(stat -c %Y "$f" 2>/dev/null || echo 0)
+  tags_json=$(jq -cn --arg t "$tags" \
+    '($t | split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(length>0)))')
+  jq -cn --arg file "$f" --arg title "${title:-Untitled idea}" --arg created "$created" \
+    --argjson mtime "$mtime" --argjson tags "$tags_json" \
+    '{file:$file, title:$title, created:$created, mtime:$mtime, tags:$tags}'
+}
+
+case "$cmd" in
+  list)
+    shopt -s nullglob
+    files=("$dir"/*.md)
+    if [[ ${#files[@]} -eq 0 ]]; then
+      echo "[]"
+      exit 0
+    fi
+    for f in "${files[@]}"; do parse_one "$f"; done | jq -cs 'sort_by(-.mtime)'
+    ;;
+
+  new)
+    text="${3:-}"
+    [[ -n $(printf '%s' "$text" | tr -d '[:space:]') ]] || fail "empty idea text"
+    mkdir -p "$dir"
+
+    ts=$(date +%Y-%m-%d-%H%M%S)
+    created=$(date -Iseconds)
+    first_line=$(printf '%s\n' "$text" | { grep -m1 -v '^[[:space:]]*$' || true; })
+    slug=$(printf '%s' "$first_line" \
+      | tr '[:upper:]' '[:lower:]' \
+      | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
+      | cut -c1-40)
+    [[ -n $slug ]] || slug="idea"
+
+    file="$dir/$ts-$slug.md"
+    while [[ -e $file ]]; do
+      ts="${ts}-${RANDOM}"
+      file="$dir/$ts-$slug.md"
+    done
+
+    tags=$(printf '%s' "$text" \
+      | { grep -oE '#[A-Za-z0-9_-]+' || true; } \
+      | sed 's/^#//' | tr '[:upper:]' '[:lower:]' | sort -u | paste -sd, -)
+
+    {
+      printf -- '---\n'
+      printf 'created: %s\n' "$created"
+      printf 'tags: %s\n' "$tags"
+      printf -- '---\n\n'
+      printf '%s\n' "$text"
+    } > "$file"
+
+    omarchy-notification-send --app-name "Sparks" -t 2000 "Idea logged" "${first_line:-New idea}" >/dev/null 2>&1 || true
+    jq -cn --arg file "$file" '{file:$file}'
+    ;;
+
+  remove)
+    file="${3:-}"
+    [[ -n $file ]] || fail "missing file"
+    real_dir=$(realpath -e "$dir") || fail "ideas dir not found"
+    real_file=$(realpath -e "$file") || fail "file not found"
+    [[ $real_file == "$real_dir"/* ]] || fail "refusing to remove a file outside the ideas dir"
+    rm -f -- "$real_file"
+    ;;
+
+  *)
+    fail "unknown command: $cmd"
+    ;;
+esac
