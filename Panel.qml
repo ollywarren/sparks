@@ -7,7 +7,8 @@ import qs.Ui
 
 // Bar widget + popup for browsing logged ideas. The floating quick-capture
 // window (Capture.qml) is a separate overlay entry point summoned by a
-// keybinding; this panel is read/manage-only: filter by tag, open, delete.
+// keybinding; this panel is read/manage-only: search, filter, open, hand off
+// to the coding agent, archive, delete.
 Panel {
   id: root
   moduleName: "ollywarren.sparks"
@@ -25,6 +26,7 @@ Panel {
   readonly property int maxListItems: Math.max(5, parseInt(setting("maxListItems", 40), 10) || 40)
   readonly property string ideasDirRaw: setting("ideasDir", "~/Notes/ideas")
   readonly property string ideasDir: expandHome(ideasDirRaw)
+  readonly property string projectsDir: expandHome(setting("projectsDir", "~/Work"))
 
   function expandHome(path) {
     var home = Quickshell.env("HOME") || ""
@@ -39,12 +41,76 @@ Panel {
   // ---------------------------------------------------------------- state
   property var ideas: []
   property string activeTag: ""
+  property string statusFilter: "active"
+  property string query: ""
+  // Files whose *body* matched the query, from a debounced grep. Titles and
+  // tags are already in `ideas`, so the script only has to answer the part
+  // the panel can't.
+  property var bodyMatches: []
+  property int selectedIndex: -1
   property string pendingDeleteFile: ""
 
-  readonly property var tagCounts: computeTagCounts(ideas)
-  readonly property var filteredIdeas: activeTag === ""
-    ? ideas
-    : ideas.filter(function(i) { return i.tags && i.tags.indexOf(activeTag) !== -1 })
+  readonly property var statusOptions: [
+    { value: "active",   label: "Active",   tooltip: "New, planned and building" },
+    { value: "done",     label: "Done" },
+    { value: "archived", label: "Archived" },
+    { value: "all",      label: "All" }
+  ]
+
+  function statusOf(idea) {
+    return (idea && idea.status) ? String(idea.status) : "new"
+  }
+
+  function statusVisible(status) {
+    if (root.statusFilter === "all") return true
+    if (root.statusFilter === "done") return status === "done"
+    if (root.statusFilter === "archived") return status === "archived"
+    return status !== "done" && status !== "archived"
+  }
+
+  // A `#token` filters on tags; anything else has to appear in the title or,
+  // via the grep, somewhere in the file body. All tokens must match.
+  function matchesQuery(idea) {
+    var q = root.query.trim().toLowerCase()
+    if (q === "") return true
+    var tokens = q.split(/\s+/)
+    var title = String(idea.title || "").toLowerCase()
+    var tags = (idea.tags || []).join(" ").toLowerCase()
+    var inBody = root.bodyMatches.indexOf(idea.file) !== -1
+    for (var i = 0; i < tokens.length; i++) {
+      var t = tokens[i]
+      if (t.charAt(0) === "#") {
+        if (t.length > 1 && tags.indexOf(t.slice(1)) === -1) return false
+      } else if (title.indexOf(t) === -1 && !inBody) {
+        return false
+      }
+    }
+    return true
+  }
+
+  readonly property var statusScoped: root.ideas.filter(function(i) {
+    return root.statusVisible(root.statusOf(i))
+  })
+
+  readonly property var filteredIdeas: root.statusScoped.filter(function(i) {
+    return (root.activeTag === "" || (i.tags && i.tags.indexOf(root.activeTag) !== -1))
+      && root.matchesQuery(i)
+  })
+
+  readonly property var tagCounts: computeTagCounts(statusScoped)
+  readonly property int newCount: root.ideas.filter(function(i) {
+    return root.statusOf(i) === "new"
+  }).length
+
+  onFilteredIdeasChanged: {
+    if (root.selectedIndex >= root.filteredIdeas.length)
+      root.selectedIndex = root.filteredIdeas.length - 1
+  }
+
+  onQueryChanged: {
+    root.selectedIndex = -1
+    searchDebounce.restart()
+  }
 
   function computeTagCounts(list) {
     var counts = {}
@@ -72,6 +138,7 @@ Panel {
     return Math.floor(months / 12) + "y ago"
   }
 
+  // ------------------------------------------------------------- actions
   function refresh() {
     if (!listProc.running) listProc.running = true
   }
@@ -85,6 +152,34 @@ Panel {
     // instead of vanishing silently.
     openProc.command = ["bash", root.scriptPath, "open", file]
     openProc.running = true
+  }
+
+  function setStatus(file, value) {
+    if (actionProc.running) return
+    actionProc.command = ["bash", root.scriptPath, "set", root.ideasDir, file, "status", value]
+    actionProc.running = true
+  }
+
+  // The two agent handoffs. bin/sparks builds the prompt and execs
+  // omarchy-agent-prompt, which opens the user's default agent in a terminal
+  // — so the panel gets out of the way once the process is away.
+  function reviewIdea(file) {
+    if (actionProc.running) return
+    actionProc.command = ["bash", root.scriptPath, "review", root.ideasDir, file]
+    actionProc.running = true
+    root.close()
+  }
+
+  function buildIdea(file) {
+    if (actionProc.running) return
+    actionProc.command = ["bash", root.scriptPath, "build", root.ideasDir, file, root.projectsDir]
+    actionProc.running = true
+    root.close()
+  }
+
+  function openProject(dir) {
+    Util.execArgv(["xdg-open", dir])
+    root.close()
   }
 
   function requestDelete(file) {
@@ -104,28 +199,37 @@ Panel {
     Util.execArgv(["xdg-open", root.ideasDir])
   }
 
-  Process {
-    id: openProc
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var err = String(text || "").trim()
-        if (err) console.warn("ollywarren.sparks: open failed:", err)
-      }
+  function moveSelection(delta) {
+    var n = root.filteredIdeas.length
+    if (n === 0) {
+      root.selectedIndex = -1
+      return
     }
+    var next = root.selectedIndex < 0 ? (delta > 0 ? 0 : n - 1) : root.selectedIndex + delta
+    root.selectedIndex = Math.max(0, Math.min(n - 1, next))
+    listView.positionViewAtIndex(root.selectedIndex, ListView.Contain)
   }
 
-  onOpenedChanged: if (opened) refresh()
-
-  Timer {
-    // Catches ideas logged from the capture window (or edited externally)
-    // while the panel is sitting open.
-    interval: 4000
-    running: root.opened
-    repeat: true
-    onTriggered: root.refresh()
+  function selectedIdea() {
+    if (root.selectedIndex < 0 || root.selectedIndex >= root.filteredIdeas.length) return null
+    return root.filteredIdeas[root.selectedIndex]
   }
 
+  function runBodySearch() {
+    var q = root.query.trim()
+    if (q.length < 2) {
+      root.bodyMatches = []
+      return
+    }
+    if (searchProc.running) {
+      searchDebounce.restart()
+      return
+    }
+    searchProc.command = ["bash", root.scriptPath, "search", root.ideasDir, q]
+    searchProc.running = true
+  }
+
+  // ------------------------------------------------------------ processes
   Process {
     id: listProc
     command: ["bash", root.scriptPath, "list", root.ideasDir]
@@ -145,9 +249,72 @@ Panel {
   }
 
   Process {
+    id: searchProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var parsed = JSON.parse(text)
+          root.bodyMatches = Array.isArray(parsed) ? parsed : []
+        } catch (e) {
+          root.bodyMatches = []
+        }
+      }
+    }
+  }
+
+  Process {
+    id: openProc
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var err = String(text || "").trim()
+        if (err) console.warn("ollywarren.sparks: open failed:", err)
+      }
+    }
+  }
+
+  Process {
+    id: actionProc
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var err = String(text || "").trim()
+        if (err) console.warn("ollywarren.sparks: action failed:", err)
+      }
+    }
+    onRunningChanged: if (!running) root.refresh()
+  }
+
+  Process {
     id: removeProc
     stdout: StdioCollector { waitForEnd: true }
     onRunningChanged: if (!running) root.refresh()
+  }
+
+  Timer {
+    id: searchDebounce
+    interval: 250
+    onTriggered: root.runBodySearch()
+  }
+
+  onOpenedChanged: {
+    if (opened) {
+      searchField.text = ""
+      root.query = ""
+      root.bodyMatches = []
+      root.selectedIndex = -1
+      refresh()
+    }
+  }
+
+  Timer {
+    // Catches ideas logged from the capture window (or edited externally)
+    // while the panel is sitting open.
+    interval: 4000
+    running: root.opened
+    repeat: true
+    onTriggered: root.refresh()
   }
 
   // ------------------------------------------------------------- bar face
@@ -159,7 +326,11 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: root.iconGlyph
+    // Lit while anything is still unreviewed, so a captured idea is visible
+    // without opening the popup.
+    active: root.newCount > 0
     tooltipText: "Sparks — " + root.ideas.length + " idea" + (root.ideas.length === 1 ? "" : "s")
+      + (root.newCount > 0 ? " · " + root.newCount + " new" : "")
 
     onPressed: function(code) { root.toggle() }
   }
@@ -171,13 +342,16 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    focusTarget: keyCatcher
+    focusTarget: searchField
     contentWidth: panel.fittedContentWidth(Style.space(root.panelWidth))
     contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(560))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // The search field owns the keyboard while it has focus — otherwise the
+      // catcher would eat h/j/k/l and x before they reached the text box.
+      blocked: searchField.activeFocus
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
@@ -189,9 +363,10 @@ Panel {
         PanelHero {
           width: parent.width
           title: "Sparks"
-          meta: root.activeTag === ""
+          meta: root.filteredIdeas.length === root.ideas.length
             ? (root.ideas.length + " idea" + (root.ideas.length === 1 ? "" : "s"))
-            : (root.filteredIdeas.length + " of " + root.ideas.length + " · #" + root.activeTag)
+            : (root.filteredIdeas.length + " of " + root.ideas.length
+               + (root.activeTag === "" ? "" : " · #" + root.activeTag))
           foreground: root.foreground
           fontFamily: root.fontFamily
           iconComponent: Component {
@@ -205,6 +380,64 @@ Panel {
           }
         }
 
+        // ---------------------------------------------------------- search
+        TextField {
+          id: searchField
+          width: parent.width
+          placeholderText: "Search ideas… #tag to filter"
+          foreground: root.foreground
+          accent: root.accent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+
+          onTextChanged: root.query = text
+
+          Keys.priority: Keys.BeforeItem
+          Keys.onPressed: function(event) {
+            if (event.key === Qt.Key_Escape) {
+              // First Esc clears a query, second closes — the clipboard
+              // panel's behaviour, and the one people expect from a filter.
+              if (searchField.text !== "") searchField.text = ""
+              else root.close()
+              event.accepted = true
+            } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+              root.switchPanel((event.modifiers & Qt.ShiftModifier)
+                || event.key === Qt.Key_Backtab ? -1 : 1)
+              event.accepted = true
+            } else if (event.key === Qt.Key_Down) {
+              root.moveSelection(1)
+              event.accepted = true
+            } else if (event.key === Qt.Key_Up) {
+              root.moveSelection(-1)
+              event.accepted = true
+            } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+              var idea = root.selectedIdea()
+              if (idea) root.openIdea(idea.file)
+              event.accepted = true
+            } else if (event.key === Qt.Key_Delete && (event.modifiers & Qt.ShiftModifier)) {
+              var target = root.selectedIdea()
+              if (target) root.requestDelete(target.file)
+              event.accepted = true
+            }
+          }
+        }
+
+        // --------------------------------------------------- status filter
+        ButtonGroup {
+          width: parent.width
+          options: root.statusOptions
+          value: root.statusFilter
+          foreground: root.foreground
+          accent: root.accent
+          fontFamily: root.fontFamily
+          fontSize: Style.font.bodySmall
+          focusable: false
+          onChanged: function(value) {
+            root.statusFilter = value
+            root.selectedIndex = -1
+          }
+        }
+
         // ------------------------------------------------------ tag chips
         Flow {
           width: parent.width
@@ -214,7 +447,7 @@ Panel {
           Button {
             text: "All"
             bordered: true
-            focusable: true
+            focusable: false
             selected: root.activeTag === ""
             foreground: root.foreground
             accent: root.accent
@@ -225,9 +458,10 @@ Panel {
           Repeater {
             model: root.tagCounts
             delegate: Button {
+              required property var modelData
               text: "#" + modelData.tag + " " + modelData.count
               bordered: true
-              focusable: true
+              focusable: false
               selected: root.activeTag === modelData.tag
               foreground: root.foreground
               accent: root.accent
@@ -245,90 +479,154 @@ Panel {
           visible: root.filteredIdeas.length === 0
           text: root.ideas.length === 0
             ? "No ideas yet — use your capture keybinding to log one."
-            : "No ideas with this tag."
+            : "Nothing matches these filters."
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall
           wrapMode: Text.Wrap
         }
 
-        Flickable {
-          id: listFlick
+        ListView {
+          id: listView
           width: parent.width
-          height: Math.min(ideaList.implicitHeight, Style.space(360))
-          contentWidth: width
-          contentHeight: ideaList.implicitHeight
+          height: Math.min(contentHeight, Style.space(360))
+          model: root.filteredIdeas
+          spacing: Style.space(4)
           clip: true
           boundsBehavior: Flickable.StopAtBounds
-          flickableDirection: Flickable.VerticalFlick
           visible: root.filteredIdeas.length > 0
 
-          Column {
-            id: ideaList
-            width: parent.width
-            spacing: Style.space(4)
+          delegate: Rectangle {
+            id: row
+            required property var modelData
+            required property int index
 
-            Repeater {
-              model: root.filteredIdeas
-              delegate: Rectangle {
-                width: ideaList.width
-                height: ideaRow.implicitHeight + Style.space(12)
-                radius: Style.cornerRadius
-                color: ideaHover.hovered ? Util.alpha(root.foreground, 0.06) : "transparent"
+            readonly property string rowStatus: root.statusOf(modelData)
+            readonly property bool selected: root.selectedIndex === index
+            readonly property bool showActions: ideaHover.hovered || selected
 
-                HoverHandler { id: ideaHover }
-                MouseArea {
-                  anchors.fill: parent
-                  anchors.rightMargin: Style.space(30)
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.openIdea(modelData.file)
-                }
+            width: ListView.view.width
+            height: ideaRow.implicitHeight + Style.space(12)
+            radius: Style.cornerRadius
+            color: selected
+              ? Style.selectedFillFor(root.foreground, root.accent)
+              : (ideaHover.hovered ? Util.alpha(root.foreground, 0.06) : "transparent")
 
-                Column {
-                  id: ideaRow
-                  anchors.left: parent.left
-                  anchors.right: deleteButton.left
-                  anchors.verticalCenter: parent.verticalCenter
-                  anchors.leftMargin: Style.space(6)
-                  anchors.rightMargin: Style.space(6)
-                  spacing: Style.space(2)
+            HoverHandler { id: ideaHover }
+            MouseArea {
+              anchors.fill: parent
+              anchors.rightMargin: row.showActions ? actions.width + Style.space(8) : 0
+              cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                root.selectedIndex = row.index
+                root.openIdea(row.modelData.file)
+              }
+            }
 
-                  Text {
-                    width: parent.width
-                    textFormat: Text.PlainText
-                    text: modelData.title
-                    color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                    elide: Text.ElideRight
-                  }
+            Column {
+              id: ideaRow
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.leftMargin: Style.space(6)
+              // The action cluster only reserves room while it is showing, so
+              // a resting row gets the full width for its title.
+              anchors.rightMargin: Style.space(6)
+                + (row.showActions ? actions.width + Style.space(4) : 0)
+              spacing: Style.space(2)
 
-                  Text {
-                    width: parent.width
-                    textFormat: Text.PlainText
-                    text: root.relativeTime(modelData.mtime)
-                      + (modelData.tags && modelData.tags.length ? "  ·  #" + modelData.tags.join(" #") : "")
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    elide: Text.ElideRight
-                  }
-                }
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                text: row.modelData.title
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                elide: Text.ElideRight
+              }
 
-                Button {
-                  id: deleteButton
-                  anchors.right: parent.right
-                  anchors.verticalCenter: parent.verticalCenter
-                  anchors.rightMargin: Style.space(4)
-                  iconText: "󰆴"
-                  tooltipText: "Delete"
-                  bordered: false
-                  focusable: true
-                  foreground: root.dim
-                  accent: Color.urgent
-                  fontFamily: root.fontFamily
-                  onClicked: root.requestDelete(modelData.file)
-                }
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                text: root.relativeTime(row.modelData.mtime)
+                  + (row.rowStatus === "new" ? "" : "  ·  " + row.rowStatus)
+                  + (row.modelData.tags && row.modelData.tags.length
+                     ? "  ·  #" + row.modelData.tags.join(" #") : "")
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+            }
+
+            // Revealed on hover or when the row is the keyboard selection, so
+            // a 380px row isn't permanently five icons wide.
+            Row {
+              id: actions
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.rightMargin: Style.space(4)
+              spacing: Style.space(2)
+              visible: row.showActions
+
+              PanelActionButton {
+                iconText: "󰧑"
+                tooltipText: row.rowStatus === "new"
+                  ? "Research this into a brief with your agent"
+                  : "Re-review with your agent"
+                foreground: root.dim
+                hoverColor: root.accent
+                fontFamily: root.fontFamily
+                onClicked: root.reviewIdea(row.modelData.file)
+              }
+
+              PanelActionButton {
+                visible: row.modelData.project === "" && row.rowStatus === "planned"
+                iconText: "󱁤"
+                tooltipText: "Scaffold a project and start building"
+                foreground: root.dim
+                hoverColor: root.accent
+                fontFamily: root.fontFamily
+                onClicked: root.buildIdea(row.modelData.file)
+              }
+
+              PanelActionButton {
+                visible: row.modelData.project !== ""
+                iconText: "󰝰"
+                tooltipText: "Open " + row.modelData.project
+                foreground: root.dim
+                hoverColor: root.accent
+                fontFamily: root.fontFamily
+                onClicked: root.openProject(row.modelData.project)
+              }
+
+              PanelActionButton {
+                visible: row.rowStatus !== "done" && row.rowStatus !== "archived"
+                iconText: "󰗠"
+                tooltipText: "Mark done"
+                foreground: root.dim
+                hoverColor: root.accent
+                fontFamily: root.fontFamily
+                onClicked: root.setStatus(row.modelData.file, "done")
+              }
+
+              PanelActionButton {
+                iconText: row.rowStatus === "archived" ? "󰑐" : "󱉙"
+                tooltipText: row.rowStatus === "archived" ? "Restore" : "Archive"
+                foreground: root.dim
+                hoverColor: root.accent
+                fontFamily: root.fontFamily
+                onClicked: root.setStatus(row.modelData.file,
+                  row.rowStatus === "archived" ? "new" : "archived")
+              }
+
+              PanelActionButton {
+                iconText: "󰆴"
+                tooltipText: "Delete"
+                foreground: root.dim
+                hoverColor: Color.urgent
+                fontFamily: root.fontFamily
+                onClicked: root.requestDelete(row.modelData.file)
               }
             }
           }
@@ -344,7 +642,7 @@ Panel {
             text: "Open folder"
             iconText: "󰉋"
             bordered: true
-            focusable: true
+            focusable: false
             foreground: root.foreground
             accent: root.accent
             fontFamily: root.fontFamily
