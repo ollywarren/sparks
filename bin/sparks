@@ -17,10 +17,41 @@
 #   sparks create <dir> <file> [projectsDir] -> scaffolds a workspace, hands it over
 set -euo pipefail
 
-fail() { echo "sparks: $*" >&2; exit 1; }
+NOTIFIED=false
 
 notify() {
+  NOTIFIED=true
   omarchy-notification-send --app-name "Sparks" -t 4000 "$1" "${2:-}" >/dev/null 2>&1 || true
+}
+
+# The commands that end in a window of their own are launched detached by the
+# panel, so nothing is reading our stderr: a bare `fail` there would be silent.
+# Those get a notification as well as the log line -- unless one has already
+# gone out, since the specific cases below word it better than "$*" does. This
+# generic one is for the paths nobody anticipated.
+fail() {
+  echo "sparks: $*" >&2
+  case "${cmd:-}" in
+    review | create)
+      [[ $NOTIFIED == true ]] || notify "Couldn't hand this idea over" "$*"
+      ;;
+    open)
+      [[ $NOTIFIED == true ]] || notify "Couldn't open this idea" "$*"
+      ;;
+  esac
+  exit 1
+}
+
+# Launch the coding agent and return, rather than `exec` into it. The chain
+# from here -- omarchy-agent-prompt, omarchy-launch-tui, `setsid uwsm-app`,
+# `systemd-run --scope` -- is all exec and no fork, so without `--fork` the
+# terminal emulator inherits this PID. That matters because our caller is a
+# Quickshell `Process`, which owns the PID it spawned: it stays `running` for
+# as long as the agent's window is open (blocking further handoffs) and kills
+# it whenever the bar widget is torn down for a theme change or a monitor
+# event. `--fork` plus closed stdio makes the agent nobody's child.
+hand_off() {
+  setsid --fork omarchy-agent-prompt "$1" </dev/null >/dev/null 2>&1
 }
 
 # The plugin directory, resolved from this script rather than hardcoded, so a
@@ -373,7 +404,7 @@ PROMPT
     # Start in the ideas folder so sibling ideas are readable, and so
     # omarchy-agent's "\$PWD is \$HOME" redirect into ~/Work doesn't fire.
     cd "$REAL_DIR"
-    exec omarchy-agent-prompt "$prompt"
+    hand_off "$prompt"
     ;;
 
   create)
@@ -425,7 +456,7 @@ PROMPT
     )
 
     cd "$proj"
-    exec omarchy-agent-prompt "$prompt"
+    hand_off "$prompt"
     ;;
 
   *)

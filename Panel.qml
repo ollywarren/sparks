@@ -143,37 +143,40 @@ Panel {
     if (!listProc.running) listProc.running = true
   }
 
+  // Anything that ends in a long-lived window of its own — the markdown app,
+  // the agent's terminal — is launched detached. A Quickshell `Process` owns
+  // the PID it spawns, and nothing in these chains forks, so the window ends
+  // up wearing that PID: the Process never leaves `running`, and the window
+  // dies the moment this widget is torn down for a theme change or a monitor
+  // event. Detached costs us the stderr log line, so bin/sparks notifies on
+  // the failure paths instead.
   function openIdea(file) {
     // Routed through bin/sparks rather than a plain xdg-open: a .md file's
     // detected mimetype here is text/plain, not text/markdown, so xdg-open
     // would hand it to the text/plain default (nvim) instead of whatever
-    // markdown app the user actually has set (Omawrite by default). Run as
-    // a tracked Process (not execDetached) so a failure lands in the log
-    // instead of vanishing silently.
-    openProc.command = ["bash", root.scriptPath, "open", file]
-    openProc.running = true
+    // markdown app the user actually has set (Omawrite by default).
+    Util.execArgv(["bash", root.scriptPath, "open", file])
   }
 
+  // Quick, self-terminating, and worth knowing the result of, so this one
+  // stays a tracked Process — and keeps `actionProc` to itself, so a handoff
+  // can never be what stops a status change from happening.
   function setStatus(file, value) {
     if (actionProc.running) return
     actionProc.command = ["bash", root.scriptPath, "set", root.ideasDir, file, "status", value]
     actionProc.running = true
   }
 
-  // The two agent handoffs. bin/sparks assembles the prompt and execs
+  // The two agent handoffs. bin/sparks assembles the prompt and hands it to
   // omarchy-agent-prompt, which opens the user's default agent in a terminal
   // — so the panel gets out of the way once the process is away.
   function reviewIdea(file) {
-    if (actionProc.running) return
-    actionProc.command = ["bash", root.scriptPath, "review", root.ideasDir, file]
-    actionProc.running = true
+    Util.execArgv(["bash", root.scriptPath, "review", root.ideasDir, file])
     root.close()
   }
 
   function createIdea(file) {
-    if (actionProc.running) return
-    actionProc.command = ["bash", root.scriptPath, "create", root.ideasDir, file, root.projectsDir]
-    actionProc.running = true
+    Util.execArgv(["bash", root.scriptPath, "create", root.ideasDir, file, root.projectsDir])
     root.close()
   }
 
@@ -264,23 +267,12 @@ Panel {
   }
 
   Process {
-    id: openProc
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var err = String(text || "").trim()
-        if (err) console.warn("ollywarren.sparks: open failed:", err)
-      }
-    }
-  }
-
-  Process {
     id: actionProc
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         var err = String(text || "").trim()
-        if (err) console.warn("ollywarren.sparks: action failed:", err)
+        if (err) console.warn("ollywarren.sparks: status change failed:", err)
       }
     }
     onRunningChanged: if (!running) root.refresh()
