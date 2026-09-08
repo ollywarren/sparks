@@ -4,8 +4,12 @@ An [Omarchy](https://omarchy.org/) shell plugin for quick-capturing ideas. A
 bar icon lists everything you've logged, searchable and filterable; a
 keybinding pops a small floating window anywhere, any time, to type or dictate
 a new one. When you're ready to think about one properly, one click hands it to
-your coding agent to research into a planning brief — and another turns that
-brief into a project.
+your agent to research into a planning brief — and another to go and make it.
+
+An idea is whatever you throw in there: a short story, a photo book, a web app,
+a desktop plugin, a hallway that needs repainting. Sparks doesn't care, and
+neither do the skills it ships with. Some ideas you'll never hand to an agent —
+a reminder is just a reminder — and nothing makes you.
 
 Ideas are saved as plain Markdown files — nothing proprietary, no database —
 so the folder is trivial to point a script, a sync tool, or an AI agent at.
@@ -21,7 +25,7 @@ so the folder is trivial to point a script, a sync tool, or an AI agent at.
   contents; `#tag` in the search box filters by tag. Up/Down move, Enter opens,
   Esc clears the search and Esc again closes.
 - **Row actions** — hover a row (or select it with the arrow keys) for
-  󰧑 review, 󱁤 build, 󰗠 mark done, 󱉙 archive and 󰆴 delete.
+  󰧑 review, 󰐊 create, 󰗠 mark done, 󱉙 archive and 󰆴 delete.
 - **Capture window** — trigger it with a keybinding (see [Install](#install)).
   Type or dictate, drop `#tags` anywhere in the text — Tab completes a tag
   you've used before — then either press `Ctrl+Enter`, press `Esc`, or click
@@ -38,12 +42,12 @@ out later — the seed of a future planning task, not just a note to self:
 ```markdown
 ---
 created: 2026-09-06T14:32:00+01:00
-tags: sparks,ideas
+tags: gift,photos
 status: new
 ---
 
 ## Idea
-Add a plugin marketplace page. #sparks #ideas
+A photo book of the garden through one year, as a present. #photos #gift
 
 ## Context
 
@@ -80,7 +84,7 @@ lines of bash, easier to change there than through a settings UI.
 |---|---|---|
 | `new` | Captured, not thought about yet | Capture |
 | `planned` | Has a researched brief | The review handoff |
-| `building` | Has a project underway | The build handoff |
+| `creating` | Being made | The create handoff |
 | `done` | Finished | 󰗠 in the popup |
 | `archived` | Not doing this | 󱉙 in the popup |
 
@@ -91,8 +95,8 @@ first.
 ## Handing an idea to your agent
 
 An idea captured in ten seconds usually deserves more thought than it got.
-Sparks ships two skills that give that thought to whichever coding agent you've
-set as your Omarchy default.
+Sparks ships two skills that give that thought to whichever agent you've set as
+your Omarchy default. Neither assumes the idea is software.
 
 **󰧑 Review** hands the idea to your agent with the `spark-review` skill: it
 researches the idea against this machine, fills in `## Context`, `## Goal`,
@@ -107,24 +111,30 @@ the idea you've captured twice, or the one this depends on, without the agent
 manufacturing a connection out of a folder it was told to find one in, and
 without getting slower as the folder fills up.
 
-**󱁤 Build** appears once an idea has a brief. It scaffolds `~/Work/<slug>/`
-with a fresh git repo and a `BRIEF.md`, sets `status: building` and `project:`,
-then hands the project to your agent with the `spark-build` skill. Afterwards
-the row's action becomes 󰝰 open the project.
+**󰐊 Create** appears once an idea has a brief. It scaffolds a workspace at
+`~/Work/<slug>/` — a folder, a git repo and a `BRIEF.md` — sets
+`status: creating` and `project:`, then hands it to your agent with the
+`spark-create` skill. Afterwards the row's action becomes 󰝰 open the
+workspace.
+
+What comes out depends entirely on the brief. A web app produces code; a
+hallway repaint produces a costed shortlist of colours and where to buy them.
+The git repo is there so anything the agent does is undoable, not because
+every idea is a software project.
 
 `BRIEF.md` is not a copy of the brief — it is a symlink to the idea file
-itself, so the project's spec and your note are one document. Nothing new is
-ever added to your ideas folder. When the agent ticks off steps in `## Plan`
-while building, it is editing the note you open from the bar, so the plan stays
+itself, so the workspace's spec and your note are one document. Nothing new is
+ever added to your ideas folder. When the agent ticks off steps in `## Plan` as
+it works, it is editing the note you open from the bar, so the plan stays
 current rather than diverging from a snapshot taken at scaffold time. In the
 popup the only visible change is the idea's timestamp refreshing and the row
 moving to the top.
 
 That holds only while the symlink does. If a tool replaces `BRIEF.md` instead
 of editing it in place — some editors write a temp file and rename over the
-original — the project gets its own private copy and your note silently stops
-updating. The `spark-build` skill warns the agent off; `ls -l` in the project
-directory is how you check.
+original — the workspace gets its own private copy and your note silently
+stops updating. The `spark-create` skill warns the agent off; `ls -l` in the
+workspace is how you check.
 
 Both run through `omarchy agent prompt`, so they respect
 `omarchy default agent` and open in a terminal you can watch and steer, exactly
@@ -132,7 +142,7 @@ like `omarchy agent crash`. The prompt names the skill *and* gives its absolute
 path, so an agent with no skill mechanism can just read the file.
 
 The skills live in the plugin, at `agent/skills/spark-review/SKILL.md` and
-`agent/skills/spark-build/SKILL.md`. Nothing is installed outside the plugin
+`agent/skills/spark-create/SKILL.md`. Nothing is installed outside the plugin
 directory, and `omarchy plugin remove` takes them with it. Edit them if you
 want a different house style — that's the point of them being files.
 
@@ -142,7 +152,7 @@ want a different house style — that's the point of them being files.
 - **`jq`** — used by the backing script to build/parse JSON. Already a base
   Omarchy dependency (the same script pattern `omarchy-reminder` uses).
 - **`xdg-open`** — opens an idea file or the ideas folder from the bar list.
-- **A default coding agent**, for the review and build handoffs only —
+- **A default agent**, for the review and create handoffs only —
   `omarchy default agent claude` (or opencode, codex, gemini…). Everything else
   works without one.
 
@@ -212,13 +222,13 @@ same plugin (`bar-widget` and `overlay` kinds), so each is toggled separately.
 - `.md` files under your configured ideas folder (default `~/Notes/ideas/`),
   one per idea, only when you save one from the capture window. Row actions
   rewrite a single `status:` / `planned:` / `project:` line in one of them.
-- A project directory under `projectsDir` (default `~/Work/`), but only when
-  you press Build on an idea.
+- A workspace directory under `projectsDir` (default `~/Work/`), but only when
+  you press Create on an idea.
 - Nothing else. No shell.json edits beyond what `omarchy plugin enable` /
   `disable` already does for the bar entry, no state file, no network calls.
   The processes it runs are `bash` (its own backing script, `bin/sparks`),
-  `xdg-open`, `git init` on a new project, `voxtype` if you press the mic,
-  `omarchy-agent-prompt` if you press review or build, and
+  `xdg-open`, `git init` on a new workspace, `voxtype` if you press the mic,
+  `omarchy-agent-prompt` if you press review or create, and
   `omarchy-notification-send` to confirm a save — all of which ship with
   Omarchy or your desktop.
 
@@ -235,7 +245,7 @@ which hot-reloads on save:
 |---|---|---|
 | `icon` | `✨` | Bar glyph |
 | `ideasDir` | `~/Notes/ideas` | Folder ideas are saved to and listed from |
-| `projectsDir` | `~/Work` | Where Build scaffolds a project |
+| `projectsDir` | `~/Work` | Where Create scaffolds a workspace |
 | `panelWidth` | `380` | Popup width in px |
 | `maxListItems` | `40` | Most ideas shown in the popup at once |
 
@@ -255,7 +265,7 @@ and all process handoff, so the QML stays UI-only. Test it directly:
 ./bin/sparks set      ~/Notes/ideas <file> status archived
 ./bin/sparks reviewed ~/Notes/ideas <file>   # status: planned + planned: today
 ./bin/sparks review   ~/Notes/ideas <file>
-./bin/sparks build    ~/Notes/ideas <file>
+./bin/sparks create   ~/Notes/ideas <file>
 ```
 
 `set` only accepts `status`, `planned` and `project` — `created` and `tags` are
@@ -275,7 +285,7 @@ grep omarchy-shell`.
 | `Capture.qml` | Floating quick-capture window |
 | `bin/sparks` | File I/O and agent handoff |
 | `agent/skills/spark-review/SKILL.md` | How an agent researches an idea into a brief |
-| `agent/skills/spark-build/SKILL.md` | How an agent builds from a finished brief |
+| `agent/skills/spark-create/SKILL.md` | How an agent makes a finished brief real |
 
 Typing in the popup filters, so the `h`/`j`/`k`/`l` and `x` shortcuts
 `PanelKeyCatcher` normally offers are deliberately given up in favour of

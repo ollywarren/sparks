@@ -12,8 +12,9 @@ description: >
 # Reviewing a Spark
 
 A Spark is one Markdown file holding something the user thought of, typed in a
-hurry, and hasn't thought about since. Spend the thinking time they didn't,
-then write what you found into the headings already waiting in the file:
+hurry, and hasn't thought about since. It could be about anything at all.
+Spend the thinking time they didn't, then write what you found into the
+headings already waiting in the file:
 `## Context`, `## Goal`, `## Constraints`, `## Open questions`, `## Plan`.
 
 The output is a brief they can act on in a month without remembering this
@@ -29,12 +30,22 @@ conversation.
 
 A brief that only restates the idea is worse than none: it looks like progress.
 
-Verify against **this machine** before asserting anything about it — what is
-installed, what the hardware allows, `omarchy commands` for anything
-desktop-shaped, `~/.config/` for how they already have it set up,
-`~/.config/omarchy/plugins/` for what they have already built. "Four cores and
-no discrete GPU, so Kokoro runs slower than real time here" beats any amount
-of "consider performance".
+An idea can be anything — a document, a set of photographs, a web app, a
+desktop plugin, a trip, a gift. Work out what this one is before deciding what
+counts as research.
+
+**Check what can actually be checked.** Part of any idea is verifiable and the
+rest is judgement; find that line and stay on the right side of it. Concrete
+always beats general — a real price, a real date, a real page count, "four
+cores and no discrete GPU, so that model runs slower than real time here" —
+against any amount of "consider performance".
+
+Look at what they already have before proposing something new: their own
+files, notes and earlier attempts at the subject. Where the idea touches this
+machine, check the machine rather than assuming — what is installed, what the
+hardware allows, `omarchy commands` for anything desktop-shaped, `~/.config/`
+for how they have it set up, `~/.config/omarchy/plugins/` for what they have
+already built.
 
 If the prompt listed **related ideas**, read them — but they were picked by
 shared tags, so some will be irrelevant. Mention one only where the
@@ -42,13 +53,16 @@ relationship is real: the same idea already captured, or one this depends on.
 Say nothing if there isn't one. Treat a sibling's brief as an earlier pass's
 reasoning, not as established fact.
 
-Search the **web** only where the idea leans on an external tool or API — that
-it exists, is maintained, and does what the idea assumes.
+Search the **web** only where the idea leans on something outside their
+control — a tool, a service, a supplier, a venue — to confirm it exists, is
+current, and does what the idea assumes.
 
-Prefer read-only probes. This is the machine they are using right now, so if
-answering a question means changing live state — registering something with
-the compositor, reloading a daemon, installing a package — undo it afterwards
-and say in your summary what you did.
+Prefer read-only probes. This is the machine they are using right now, and the
+world is the one they live in — so if answering a question would change
+something real, don't. Where you must, keep it reversible: registering
+something with the compositor, reloading a daemon, installing a package. Undo
+it afterwards and say in your summary what you did. Never anything that
+commits them — no messages sent, no accounts made, no money spent.
 
 Say what you could not check rather than asserting it. A confidently wrong
 constraint sends them down a dead end months later.
@@ -57,7 +71,7 @@ constraint sends them down a dead end months later.
 
 - **Context** — what this actually is, and the decisions you have now settled,
   each with its reason and the alternatives you rejected. Open with the date.
-- **Goal** — what success looks like in their life, not in the code.
+- **Goal** — what success looks like in their life, not in the thing itself.
 - **Constraints** — the hard limits you established, each with its evidence.
 - **Open questions** — only genuine forks needing their judgement. If you have
   eight, most of them are research you skipped.

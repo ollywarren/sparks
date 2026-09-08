@@ -14,7 +14,7 @@
 #   sparks related <dir> <file>              -> up to 3 siblings that overlap it
 #   sparks reviewed <dir> <file>             -> marks a brief as written
 #   sparks review <dir> <file>               -> hands the idea to the default agent
-#   sparks build  <dir> <file> [projectsDir] -> scaffolds a project, hands it over
+#   sparks create <dir> <file> [projectsDir] -> scaffolds a workspace, hands it over
 set -euo pipefail
 
 fail() { echo "sparks: $*" >&2; exit 1; }
@@ -92,9 +92,9 @@ idea_title() {
   awk 'BEGIN{fm=0} /^---$/{fm++; next} fm<2{next} $0=="## Idea"{next} NF{print; exit}' "$1"
 }
 
-# True when any planning heading has been filled in. Checked by `build` rather
-# than the status field, so an idea whose brief was written by hand -- before
-# statuses existed -- still counts as reviewed.
+# True when any planning heading has been filled in. Checked by `create`
+# rather than the status field, so an idea whose brief was written by hand --
+# before statuses existed -- still counts as reviewed.
 brief_filled() {
   awk '
     /^## (Context|Goal|Constraints|Open questions|Plan)$/ { inp=1; next }
@@ -376,7 +376,7 @@ PROMPT
     exec omarchy-agent-prompt "$prompt"
     ;;
 
-  build)
+  create)
     file="${3:-}"
     projects_root="${4:-$HOME/Work}"
     [[ -n $file ]] || fail "missing file"
@@ -394,30 +394,30 @@ PROMPT
     proj="$projects_root/$slug"
 
     if [[ -e $proj && -n $(ls -A "$proj" 2>/dev/null) ]]; then
-      notify "Project already exists" "$proj"
-      fail "project directory exists and is not empty: $proj"
+      notify "Workspace already exists" "$proj"
+      fail "workspace directory exists and is not empty: $proj"
     fi
 
     mkdir -p "$proj"
     git -C "$proj" init -q >/dev/null 2>&1 || true
-    # A symlink, not a copy: the brief keeps one source of truth, so anything
-    # the agent writes into it while building shows up in the idea list too.
+    # A symlink, not a copy: the brief and the idea note stay one document, so
+    # the plan the agent keeps current is the note the user opens from the bar.
     ln -sfn "$REAL_FILE" "$proj/BRIEF.md"
 
-    fm_set "$REAL_FILE" status building
+    fm_set "$REAL_FILE" status creating
     fm_set "$REAL_FILE" project "$proj"
 
-    skill="$SPARKS_ROOT/agent/skills/spark-build/SKILL.md"
+    skill="$SPARKS_ROOT/agent/skills/spark-create/SKILL.md"
 
     prompt=$(
       cat <<PROMPT
-Start building this idea. Its planning brief is already written:
+Make this idea real. Its brief is already written:
 
-  project:  $proj
-  brief:    $proj/BRIEF.md
-            a symlink to $REAL_FILE -- edit it in place, never replace it
+  workspace: $proj
+  brief:     $proj/BRIEF.md
+             a symlink to $REAL_FILE -- edit it in place, never replace it
 
-Follow the spark-build skill. If your harness has no skill mechanism, read
+Follow the spark-create skill. If your harness has no skill mechanism, read
 this file and follow it instead:
 
   $skill

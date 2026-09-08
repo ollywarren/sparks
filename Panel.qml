@@ -51,7 +51,7 @@ Panel {
   property string pendingDeleteFile: ""
 
   readonly property var statusOptions: [
-    { value: "active",   label: "Active",   tooltip: "New, planned and building" },
+    { value: "active",   label: "Active",   tooltip: "New, planned and in progress" },
     { value: "done",     label: "Done" },
     { value: "archived", label: "Archived" },
     { value: "all",      label: "All" }
@@ -160,7 +160,7 @@ Panel {
     actionProc.running = true
   }
 
-  // The two agent handoffs. bin/sparks builds the prompt and execs
+  // The two agent handoffs. bin/sparks assembles the prompt and execs
   // omarchy-agent-prompt, which opens the user's default agent in a terminal
   // — so the panel gets out of the way once the process is away.
   function reviewIdea(file) {
@@ -170,9 +170,9 @@ Panel {
     root.close()
   }
 
-  function buildIdea(file) {
+  function createIdea(file) {
     if (actionProc.running) return
-    actionProc.command = ["bash", root.scriptPath, "build", root.ideasDir, file, root.projectsDir]
+    actionProc.command = ["bash", root.scriptPath, "create", root.ideasDir, file, root.projectsDir]
     actionProc.running = true
     root.close()
   }
@@ -582,12 +582,12 @@ Panel {
 
               PanelActionButton {
                 visible: row.modelData.project === "" && row.rowStatus === "planned"
-                iconText: "󱁤"
-                tooltipText: "Scaffold a project and start building"
+                iconText: "󰐊"
+                tooltipText: "Create it — a workspace, and your agent to start in it"
                 foreground: root.dim
                 hoverColor: root.accent
                 fontFamily: root.fontFamily
-                onClicked: root.buildIdea(row.modelData.file)
+                onClicked: root.createIdea(row.modelData.file)
               }
 
               PanelActionButton {
