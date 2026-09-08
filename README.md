@@ -108,11 +108,23 @@ manufacturing a connection out of a folder it was told to find one in, and
 without getting slower as the folder fills up.
 
 **󱁤 Build** appears once an idea has a brief. It scaffolds `~/Work/<slug>/`
-with a fresh git repo and a `BRIEF.md` symlinked back to the idea file, sets
-`status: building` and `project:`, then hands the project to your agent with
-the `spark-build` skill. Because `BRIEF.md` is a symlink, the plan stays in one
-place — updates the agent makes while building show up in your idea list. After
-that, the row's action becomes 󰝰 open the project.
+with a fresh git repo and a `BRIEF.md`, sets `status: building` and `project:`,
+then hands the project to your agent with the `spark-build` skill. Afterwards
+the row's action becomes 󰝰 open the project.
+
+`BRIEF.md` is not a copy of the brief — it is a symlink to the idea file
+itself, so the project's spec and your note are one document. Nothing new is
+ever added to your ideas folder. When the agent ticks off steps in `## Plan`
+while building, it is editing the note you open from the bar, so the plan stays
+current rather than diverging from a snapshot taken at scaffold time. In the
+popup the only visible change is the idea's timestamp refreshing and the row
+moving to the top.
+
+That holds only while the symlink does. If a tool replaces `BRIEF.md` instead
+of editing it in place — some editors write a temp file and rename over the
+original — the project gets its own private copy and your note silently stops
+updating. The `spark-build` skill warns the agent off; `ls -l` in the project
+directory is how you check.
 
 Both run through `omarchy agent prompt`, so they respect
 `omarchy default agent` and open in a terminal you can watch and steer, exactly

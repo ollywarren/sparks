@@ -15,9 +15,10 @@ The project directory holds a fresh git repo and `BRIEF.md`, and nothing else.
 That brief is the spec: an idea the user captured, then had researched into a
 plan.
 
-`BRIEF.md` is a **symlink into their ideas folder**. Edit it in place, so
-progress shows up in their Sparks list — never `>` over it or let an editor
-replace it, which breaks the link.
+`BRIEF.md` is a **symlink to the user's own idea note**, not a copy. Editing it
+in place keeps their note and this project's spec the same document — never `>`
+over it or let an editor replace it, which silently breaks the link and leaves
+them with a note that has stopped tracking the work.
 
 ## Before writing code
 
