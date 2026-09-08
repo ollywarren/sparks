@@ -95,10 +95,17 @@ Sparks ships two skills that give that thought to whichever coding agent you've
 set as your Omarchy default.
 
 **󰧑 Review** hands the idea to your agent with the `spark-review` skill: it
-researches the idea against this machine and against your other ideas, then
-fills in `## Context`, `## Goal`, `## Constraints`, `## Open questions` and
-`## Plan` in the same file, and flips `status:` to `planned`. Your `## Idea`
-text and its `created:` / `tags:` frontmatter are off limits to it.
+researches the idea against this machine, fills in `## Context`, `## Goal`,
+`## Constraints`, `## Open questions` and `## Plan` in the same file, and flips
+`status:` to `planned`. Your `## Idea` text and its `created:` / `tags:`
+frontmatter are off limits to it.
+
+The prompt also names up to three ideas that overlap this one — scored on
+shared tags and title words by `sparks related`, and frequently none at all.
+That's deliberately a lookup rather than "go and read the folder": it catches
+the idea you've captured twice, or the one this depends on, without the agent
+manufacturing a connection out of a folder it was told to find one in, and
+without getting slower as the folder fills up.
 
 **󱁤 Build** appears once an idea has a brief. It scaffolds `~/Work/<slug>/`
 with a fresh git repo and a `BRIEF.md` symlinked back to the idea file, sets
@@ -228,13 +235,15 @@ Or from the shell: `omarchy bar set ollywarren.sparks maxListItems 60`.
 and all process handoff, so the QML stays UI-only. Test it directly:
 
 ```bash
-./bin/sparks list   ~/Notes/ideas
-./bin/sparks new    ~/Notes/ideas "A test idea #testing"
-./bin/sparks search ~/Notes/ideas piper
-./bin/sparks tags   ~/Notes/ideas
-./bin/sparks set    ~/Notes/ideas <file> status archived
-./bin/sparks review ~/Notes/ideas <file>
-./bin/sparks build  ~/Notes/ideas <file>
+./bin/sparks list     ~/Notes/ideas
+./bin/sparks new      ~/Notes/ideas "A test idea #testing"
+./bin/sparks search   ~/Notes/ideas piper
+./bin/sparks tags     ~/Notes/ideas
+./bin/sparks related  ~/Notes/ideas <file>   # overlapping ideas, or []
+./bin/sparks set      ~/Notes/ideas <file> status archived
+./bin/sparks reviewed ~/Notes/ideas <file>   # status: planned + planned: today
+./bin/sparks review   ~/Notes/ideas <file>
+./bin/sparks build    ~/Notes/ideas <file>
 ```
 
 `set` only accepts `status`, `planned` and `project` — `created` and `tags` are

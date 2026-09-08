@@ -11,6 +11,8 @@
 #   sparks set    <dir> <file> <key> <value> -> rewrites one frontmatter field
 #   sparks search <dir> <query>              -> JSON array of matching file paths
 #   sparks tags   <dir>                      -> JSON array of {tag, count}
+#   sparks related <dir> <file>              -> up to 3 siblings that overlap it
+#   sparks reviewed <dir> <file>             -> marks a brief as written
 #   sparks review <dir> <file>               -> hands the idea to the default agent
 #   sparks build  <dir> <file> [projectsDir] -> scaffolds a project, hands it over
 set -euo pipefail
@@ -134,15 +136,71 @@ parse_one() {
       status:$status, planned:$planned, project:$project}'
 }
 
+# Every idea in the folder, newest first. Shared by `list` and `related` so
+# there is one parser rather than two that can drift.
+list_json() {
+  local d="$1" f
+  shopt -s nullglob
+  local files=("$d"/*.md)
+  if [[ ${#files[@]} -eq 0 ]]; then
+    echo "[]"
+    return 0
+  fi
+  for f in "${files[@]}"; do parse_one "$f"; done | jq -cs 'sort_by(-.mtime)'
+}
+
+# Siblings worth reading before planning this one: a shared tag is worth 2, a
+# shared title word 1, and it takes 2 to count -- so one shared tag qualifies
+# and one incidental word does not. Returning [] is the point of the thing. An
+# agent told to go and find prior art will find some whether or not it exists;
+# this answers the question once, cheaply, and is allowed to answer "none".
+related_json() {
+  local d="$1" target="$2"
+  list_json "$d" | jq -c --arg target "$target" '
+    def stop: ["with","that","this","from","have","into","when","what","would",
+               "could","should","about","some","more","than","then","they",
+               "them","there","been","just","like","make","want","need","only",
+               "also","does","where","which","because","after","before"];
+    def words: ascii_downcase | gsub("[^a-z0-9]+"; " ") | split(" ")
+               | map(select(length >= 4)) | . - stop | unique;
+    def isect($a; $b): $a - ($a - $b);
+    . as $all
+    | ($all | map(select(.file == $target)) | .[0]) as $me
+    | if $me == null then [] else
+        ($me.tags // []) as $mytags
+      | ($me.title // "" | words) as $mywords
+      | $all
+      | map(select(.file != $target))
+      | map( isect(.tags; $mytags) as $st
+           | (isect((.title | words); $mywords) - $st) as $sw
+           | { file, title, status,
+               shared: ((($st | map("#" + .)) + $sw) | unique),
+               score: (($st | length) * 2 + ($sw | length)) } )
+      | map(select(.score >= 2))
+      | sort_by(-.score)
+      | .[0:3]
+      | map(del(.score))
+      end'
+}
+
 case "$cmd" in
   list)
-    shopt -s nullglob
-    files=("$dir"/*.md)
-    if [[ ${#files[@]} -eq 0 ]]; then
-      echo "[]"
-      exit 0
-    fi
-    for f in "${files[@]}"; do parse_one "$f"; done | jq -cs 'sort_by(-.mtime)'
+    list_json "$dir"
+    ;;
+
+  related)
+    file="${3:-}"
+    [[ -n $file ]] || fail "missing file"
+    resolve_in_dir "$dir" "$file"
+    related_json "$REAL_DIR" "$REAL_FILE"
+    ;;
+
+  reviewed)
+    file="${3:-}"
+    [[ -n $file ]] || fail "missing file"
+    resolve_in_dir "$dir" "$file"
+    fm_set "$REAL_FILE" status planned
+    fm_set "$REAL_FILE" planned "$(date +%F)"
     ;;
 
   new)
@@ -280,30 +338,35 @@ TEMPLATE_EOF
     require_agent
 
     skill="$SPARKS_ROOT/agent/skills/spark-review/SKILL.md"
-    title=$(idea_title "$REAL_FILE")
-    tags=$(fm_get "$REAL_FILE" tags)
-    status=$(fm_get "$REAL_FILE" status)
+
+    # Everything else about the idea -- title, tags, status -- is in the file
+    # the prompt points at, so naming it here would only be a second copy to
+    # go stale. The overlap block is the exception: it is the one thing the
+    # agent cannot work out without reading the whole folder.
+    related_block=""
+    related=$(related_json "$REAL_DIR" "$REAL_FILE")
+    if [[ $(jq 'length' <<<"$related") -gt 0 ]]; then
+      related_block=$(
+        printf '\nIdeas that share tags with it -- read them, and ignore any that turn out\nto be unrelated:\n\n%s\n' \
+          "$(jq -r '.[] | "  \(.file)\n      (\(.status))  \(.shared | join(" "))"' <<<"$related")"
+      )
+      related_block+=$'\n'
+    fi
 
     prompt=$(
       cat <<PROMPT
-I captured an idea and I want it researched and turned into a planning brief.
+Review this idea into a planning brief:
 
-  idea file:     $REAL_FILE
-  title:         ${title:-Untitled idea}
-  tags:          ${tags:-none}
-  status:        ${status:-new}
-  ideas folder:  $REAL_DIR
-  helper script: $SPARKS_ROOT/bin/sparks
-
-Sibling .md files in the ideas folder are prior art -- read them before you
-research, so you build on decisions I've already made instead of relitigating
-them.
-
-Use the spark-review skill: it covers how to research an idea, what belongs
-under each heading, and what you must not touch. If your harness has no skill
-mechanism, read the skill file directly and follow it instead:
+  $REAL_FILE
+$related_block
+Follow the spark-review skill. If your harness has no skill mechanism, read
+this file and follow it instead:
 
   $skill
+
+When the brief is written, run:
+
+  $SPARKS_ROOT/bin/sparks reviewed "$REAL_DIR" "$REAL_FILE"
 PROMPT
     )
 
@@ -345,22 +408,17 @@ PROMPT
     fm_set "$REAL_FILE" project "$proj"
 
     skill="$SPARKS_ROOT/agent/skills/spark-build/SKILL.md"
-    title=$(idea_title "$REAL_FILE")
 
     prompt=$(
       cat <<PROMPT
-I want to start building an idea whose planning brief is already written.
+Start building this idea. Its planning brief is already written:
 
-  project:    $proj
-  brief:      $proj/BRIEF.md  (a symlink to $REAL_FILE)
-  title:      ${title:-Untitled idea}
+  project:  $proj
+  brief:    $proj/BRIEF.md
+            a symlink to $REAL_FILE -- edit it in place, never replace it
 
-The project directory is empty apart from a fresh git repo and that brief.
-
-Use the spark-build skill: it covers how to read the brief, what to settle
-with me before writing code, and how to keep the brief current as you go. If
-your harness has no skill mechanism, read the skill file directly and follow
-it instead:
+Follow the spark-build skill. If your harness has no skill mechanism, read
+this file and follow it instead:
 
   $skill
 PROMPT
