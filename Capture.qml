@@ -7,14 +7,28 @@ import qs.Ui
 
 // Floating quick-capture window, summoned by a Hyprland keybinding via
 // `omarchy-shell shell toggle ollywarren.sparks '{}'` — independent of the
-// bar. Type or dictate (Omarchy's own dictation toggle types into whatever
-// has focus, so the text box just needs to be focused) and hit Ctrl+Enter,
-// or simply close the window: any non-empty text is saved as a new idea.
+// bar. Type or dictate (Omarchy's own dictation types into whatever has
+// focus, so the text box just needs to be focused) and hit Ctrl+Enter, or
+// simply close the window: any non-empty text is saved as a new idea.
 Item {
   id: root
 
+  // Injected by the shell host for overlay plugins, same as the reminders
+  // flow: `shell` to report our own dismissal, `manifest` for our id, and
+  // `shell.shellConfig` to read the bar entry's settings.
+  property var shell: null
+  property var manifest: null
+
   property bool opened: false
-  property string ideasDir: expandHome("~/Notes/ideas")
+  // Set only when the IPC payload names a folder; otherwise the bar entry's
+  // `ideasDir` setting wins, so the two halves of the plugin can't drift.
+  property string payloadIdeasDir: ""
+  property var knownTags: []
+  property bool hasVoxtype: false
+
+  readonly property string ideasDir: expandHome(
+    payloadIdeasDir !== "" ? payloadIdeasDir
+      : (configuredIdeasDir() !== "" ? configuredIdeasDir() : "~/Notes/ideas"))
 
   readonly property color background: Color.menu.background
   readonly property color foreground: Color.menu.text
@@ -33,18 +47,90 @@ Item {
     return p
   }
 
+  // The bar widget's own settings block, wherever the user has put the widget.
+  // Entries are either a bare id string or an object with inline settings.
+  function configuredIdeasDir() {
+    var cfg = root.shell ? root.shell.shellConfig : null
+    if (!cfg || !cfg.bar || !cfg.bar.layout) return ""
+    var sections = ["left", "center", "right"]
+    for (var s = 0; s < sections.length; s++) {
+      var entries = cfg.bar.layout[sections[s]]
+      if (!entries || !entries.length) continue
+      for (var i = 0; i < entries.length; i++) {
+        var entry = entries[i]
+        if (!entry || typeof entry !== "object") continue
+        if (String(entry.id || "") !== "ollywarren.sparks") continue
+        if (entry.ideasDir) return String(entry.ideasDir)
+      }
+    }
+    return ""
+  }
+
+  // ------------------------------------------------------ tag completion
+  // The `#word` the cursor is sitting in, or null when it isn't in one.
+  function currentTagFragment() {
+    var before = editor.text.slice(0, editor.cursorPosition)
+    var m = before.match(/#([A-Za-z0-9_-]*)$/)
+    return m ? m[1].toLowerCase() : null
+  }
+
+  readonly property var tagSuggestions: {
+    var fragment = root.tagFragment
+    if (fragment === null) return []
+    var already = (editor.text.match(/#[A-Za-z0-9_-]+/g) || [])
+      .map(function(t) { return t.slice(1).toLowerCase() })
+    var out = []
+    for (var i = 0; i < root.knownTags.length && out.length < 5; i++) {
+      var tag = String(root.knownTags[i].tag || "")
+      if (tag.indexOf(fragment) !== 0) continue
+      if (fragment !== "" && tag === fragment) continue
+      if (already.indexOf(tag) !== -1) continue
+      out.push(tag)
+    }
+    return out
+  }
+
+  // Recomputed on every edit and cursor move; a plain property so both the
+  // suggestion list and its visibility depend on the same value.
+  property var tagFragment: null
+  function refreshTagFragment() { root.tagFragment = root.currentTagFragment() }
+
+  function completeTag(tag) {
+    var pos = editor.cursorPosition
+    var before = editor.text.slice(0, pos)
+    var after = editor.text.slice(pos)
+    var m = before.match(/#([A-Za-z0-9_-]*)$/)
+    if (!m) return
+    var start = before.length - m[0].length
+    var replacement = "#" + tag + " "
+    editor.text = before.slice(0, start) + replacement + after
+    editor.cursorPosition = start + replacement.length
+    root.refreshTagFragment()
+  }
+
+  // ------------------------------------------------------------ lifecycle
   function open(payloadJson) {
     var payload = ({})
     try { payload = JSON.parse(payloadJson || "{}") } catch (e) { payload = ({}) }
-    if (payload.ideasDir) root.ideasDir = expandHome(payload.ideasDir)
+    root.payloadIdeasDir = payload.ideasDir ? String(payload.ideasDir) : ""
 
     editor.text = ""
+    root.tagFragment = null
     root.opened = true
+    tagsProc.running = true
     Qt.callLater(function() { editor.forceActiveFocus() })
   }
 
+  // Called by the host when it hides us. Must not call back into
+  // shell.hide() — that is what dismiss() is for.
   function close() {
     root.opened = false
+  }
+
+  function dismiss() {
+    root.opened = false
+    if (root.shell && typeof root.shell.hide === "function")
+      root.shell.hide((root.manifest && root.manifest.id) || "ollywarren.sparks")
   }
 
   function toggle() {
@@ -52,10 +138,19 @@ Item {
     else root.open("{}")
   }
 
+  // The window goes away at once, but the host is only told after the write
+  // finishes: shell.hide() unloads this overlay, and an unloaded overlay takes
+  // its running Process with it.
   function trySaveAndDismiss() {
     var text = editor.text
-    if (text && text.trim().length > 0) saveProc.fire(root.scriptPath, root.ideasDir, text)
     root.opened = false
+    if (text && text.trim().length > 0) saveProc.fire(root.scriptPath, root.ideasDir, text)
+    else root.dismiss()
+  }
+
+  function toggleDictation() {
+    Util.execArgv(["voxtype", "record", "toggle"])
+    Qt.callLater(function() { editor.forceActiveFocus() })
   }
 
   Process {
@@ -65,6 +160,39 @@ Item {
       running = true
     }
     stdout: StdioCollector { waitForEnd: true }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var err = String(text || "").trim()
+        if (err) console.warn("ollywarren.sparks: save failed:", err)
+      }
+    }
+    onExited: root.dismiss()
+  }
+
+  Process {
+    id: tagsProc
+    command: ["bash", root.scriptPath, "tags", root.ideasDir]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var parsed = JSON.parse(text)
+          root.knownTags = Array.isArray(parsed) ? parsed : []
+        } catch (e) {
+          root.knownTags = []
+        }
+      }
+    }
+  }
+
+  Process {
+    // Same guard the stock dictation keybinding uses (`o.cmd_present`): no
+    // voxtype, no button.
+    id: voxtypeProbe
+    running: true
+    command: ["bash", "-c", "command -v voxtype >/dev/null 2>&1"]
+    onExited: function(code) { root.hasVoxtype = code === 0 }
   }
 
   PanelWindow {
@@ -90,7 +218,7 @@ Item {
     BorderSurface {
       id: card
       width: Math.min(Style.space(520), panel.width - Style.gapsOut * 2)
-      height: Style.space(240)
+      height: Style.space(268)
       radius: root.cornerRadius
       anchors.centerIn: parent
       color: root.background
@@ -100,6 +228,7 @@ Item {
       MouseArea { anchors.fill: parent; onClicked: {} }
 
       Column {
+        id: cardColumn
         anchors.fill: parent
         anchors.topMargin: card.contentTopInset
         anchors.rightMargin: card.contentRightInset
@@ -108,6 +237,7 @@ Item {
         spacing: Style.space(8)
 
         Text {
+          id: headerText
           textFormat: Text.PlainText
           text: "New idea"
           color: root.foreground
@@ -119,7 +249,9 @@ Item {
         BorderSurface {
           id: editorSurface
           width: parent.width
-          height: parent.height - Style.space(60)
+          height: parent.height - headerText.height - footerRow.height
+            - (suggestionRow.visible ? suggestionRow.height + cardColumn.spacing : 0)
+            - cardColumn.spacing * 2
           radius: Style.cornerRadius
           padding: Style.spacing.md
           color: Style.controlFill(editor.activeFocus, false, root.foreground, Color.accent)
@@ -162,9 +294,14 @@ Item {
               focus: true
 
               onCursorRectangleChanged: editorFlick.ensureCursorVisible()
+              onTextChanged: root.refreshTagFragment()
+              onCursorPositionChanged: root.refreshTagFragment()
 
               Keys.onPressed: function(event) {
-                if (event.key === Qt.Key_Escape) {
+                if (event.key === Qt.Key_Tab && root.tagSuggestions.length > 0) {
+                  root.completeTag(root.tagSuggestions[0])
+                  event.accepted = true
+                } else if (event.key === Qt.Key_Escape) {
                   root.trySaveAndDismiss()
                   event.accepted = true
                 } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
@@ -189,12 +326,64 @@ Item {
           }
         }
 
-        Text {
-          textFormat: Text.PlainText
-          text: "Ctrl+Enter or Esc to save · click outside to save & close"
-          color: Qt.darker(root.foreground, 1.55)
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
+        // Tags you have already used, offered while the cursor sits in a
+        // `#token`. Tab takes the first one; clicking takes any of them.
+        Row {
+          id: suggestionRow
+          width: parent.width
+          spacing: Style.space(6)
+          height: visible ? implicitHeight : 0
+          visible: root.tagSuggestions.length > 0
+
+          Repeater {
+            model: root.tagSuggestions
+            delegate: Button {
+              required property var modelData
+              text: "#" + modelData
+              bordered: true
+              focusable: false
+              foreground: root.foreground
+              accent: Color.accent
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.completeTag(modelData)
+            }
+          }
+        }
+
+        Item {
+          id: footerRow
+          width: parent.width
+          height: Math.max(hintText.implicitHeight, micButton.visible ? micButton.height : 0)
+
+          Text {
+            id: hintText
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.right: micButton.left
+            anchors.rightMargin: Style.space(8)
+            textFormat: Text.PlainText
+            text: root.tagSuggestions.length > 0
+              ? "Tab to complete #" + root.tagSuggestions[0]
+              : "Ctrl+Enter or Esc to save · click outside to save & close"
+            color: Qt.darker(root.foreground, 1.55)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+          }
+
+          PanelActionButton {
+            id: micButton
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            visible: root.hasVoxtype
+            iconText: "󰍬"
+            tooltipText: "Toggle dictation"
+            foreground: Qt.darker(root.foreground, 1.55)
+            hoverColor: Color.accent
+            fontFamily: root.fontFamily
+            onClicked: root.toggleDictation()
+          }
         }
       }
     }

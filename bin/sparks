@@ -1,49 +1,206 @@
 #!/usr/bin/env bash
-# Backing store for the ollywarren.sparks plugin: list, create, and remove
-# idea .md files. Plain files are the source of truth -- no index/database --
-# so the folder stays greppable and safe to hand to an agent as-is.
+# Backing store for the ollywarren.sparks plugin: list, create, edit and hand
+# off idea .md files. Plain files are the source of truth -- no index/database
+# -- so the folder stays greppable and safe to hand to an agent as-is.
 #
 # Usage:
-#   sparks list <dir>              -> JSON array, newest first
-#   sparks new  <dir> <text>       -> writes a new idea, prints {"file":...}
-#   sparks remove <dir> <file>     -> deletes one idea file
+#   sparks list   <dir>                      -> JSON array, newest first
+#   sparks new    <dir> <text>               -> writes a new idea, prints {"file":...}
+#   sparks remove <dir> <file>               -> deletes one idea file
+#   sparks open   <file>                     -> opens it in the markdown app
+#   sparks set    <dir> <file> <key> <value> -> rewrites one frontmatter field
+#   sparks search <dir> <query>              -> JSON array of matching file paths
+#   sparks tags   <dir>                      -> JSON array of {tag, count}
+#   sparks related <dir> <file>              -> up to 3 siblings that overlap it
+#   sparks reviewed <dir> <file>             -> marks a brief as written
+#   sparks review <dir> <file>               -> hands the idea to the default agent
+#   sparks create <dir> <file> [projectsDir] -> scaffolds a workspace, hands it over
 set -euo pipefail
 
 fail() { echo "sparks: $*" >&2; exit 1; }
+
+notify() {
+  omarchy-notification-send --app-name "Sparks" -t 4000 "$1" "${2:-}" >/dev/null 2>&1 || true
+}
+
+# The plugin directory, resolved from this script rather than hardcoded, so a
+# clone under a different name still finds its own skills.
+SPARKS_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 cmd="${1:-}"
 dir="${2:-}"
 [[ -n $cmd ]] || fail "missing command"
 [[ -n $dir ]] || fail "missing ideas directory"
 
-# Emit one idea file as a JSON object: {file, title, created, mtime, tags}.
-# Frontmatter is our own fixed two-line format (see `new`), so plain
-# line-range sed/awk is enough -- no YAML parser needed.
+# Every command that touches a named file goes through this: it resolves both
+# paths and refuses anything that isn't inside the ideas folder. Sets REAL_DIR
+# and REAL_FILE for the caller.
+resolve_in_dir() {
+  REAL_DIR=$(realpath -e "$1") || fail "ideas dir not found: $1"
+  REAL_FILE=$(realpath -e "$2") || fail "file not found: $2"
+  [[ $REAL_FILE == "$REAL_DIR"/* ]] || fail "refusing to touch a file outside the ideas dir"
+}
+
+# Frontmatter is our own fixed format (see `new`) -- a `---` fence on line 1,
+# `key: value` lines, a closing `---`. One awk pass beats a sed call per field.
+fm_all() {
+  awk '
+    NR==1 && $0=="---" { fm=1; next }
+    fm && $0=="---"    { exit }
+    fm {
+      i = index($0, ": ")
+      if (i > 0) print substr($0, 1, i-1) "\t" substr($0, i+2)
+    }
+  ' "$1"
+}
+
+fm_get() {
+  local f="$1" key="$2" k v
+  while IFS=$'\t' read -r k v; do
+    [[ $k == "$key" ]] && { printf '%s' "$v"; return 0; }
+  done < <(fm_all "$f")
+  return 0
+}
+
+# Replace a frontmatter line in place, insert it before the closing fence if
+# absent, or drop it when the value is empty. Written to a temp file in the
+# same directory and moved over, so a crash can't leave a half-written idea.
+fm_set() {
+  local f="$1" key="$2" value="$3" tmp
+  tmp=$(mktemp "$(dirname "$f")/.sparks-set.XXXXXX")
+  awk -v key="$key" -v val="$value" '
+    BEGIN { fm = 0; done = 0 }
+    NR==1 && $0=="---" { fm=1; print; next }
+    fm==1 && $0=="---" {
+      if (!done && val != "") print key ": " val
+      fm=2; print; next
+    }
+    fm==1 && index($0, key ": ")==1 {
+      if (val != "") print key ": " val
+      done=1; next
+    }
+    { print }
+  ' "$f" > "$tmp"
+  chmod --reference="$f" "$tmp" 2>/dev/null || true
+  mv -- "$tmp" "$f"
+}
+
+# The first line of the captured text: everything before it is frontmatter or
+# the literal "## Idea" heading. Falls through unchanged for idea files saved
+# before that heading existed.
+idea_title() {
+  awk 'BEGIN{fm=0} /^---$/{fm++; next} fm<2{next} $0=="## Idea"{next} NF{print; exit}' "$1"
+}
+
+# True when any planning heading has been filled in. Checked by `create`
+# rather than the status field, so an idea whose brief was written by hand --
+# before statuses existed -- still counts as reviewed.
+brief_filled() {
+  awk '
+    /^## (Context|Goal|Constraints|Open questions|Plan)$/ { inp=1; next }
+    /^## /                                                { inp=0 }
+    inp && NF                                             { found=1 }
+    END { exit(found ? 0 : 1) }
+  ' "$1"
+}
+
+require_agent() {
+  command -v omarchy-agent-prompt >/dev/null 2>&1 \
+    || fail "omarchy-agent-prompt not found -- needs Omarchy 4.x"
+  [[ -n $(omarchy-default-agent 2>/dev/null || true) ]] \
+    || { notify "No default agent" "Pick one with: omarchy default agent <name>"
+         fail "no default agent set (omarchy default agent <name>)"; }
+}
+
+# Emit one idea file as a JSON object.
 parse_one() {
-  local f="$1" created tags title mtime tags_json
-  created=$(sed -n '2,/^---$/{/^created: /{s/^created: //p}}' "$f" | head -1)
-  tags=$(sed -n '2,/^---$/{/^tags: /{s/^tags: //p}}' "$f" | head -1)
-  # Body starts with a literal "## Idea" heading (see `new`); skip that exact
-  # line so the title is the first line of the actual captured text. Falls
-  # through unchanged for idea files saved before this template existed.
-  title=$(awk 'BEGIN{fm=0} /^---$/{fm++; next} fm<2{next} $0=="## Idea"{next} NF{print; exit}' "$f")
+  local f="$1" k v title mtime tags_json
+  local created="" tags="" status="" planned="" project=""
+  while IFS=$'\t' read -r k v; do
+    case "$k" in
+      created) created=$v ;;
+      tags)    tags=$v ;;
+      status)  status=$v ;;
+      planned) planned=$v ;;
+      project) project=$v ;;
+    esac
+  done < <(fm_all "$f")
+  title=$(idea_title "$f")
   mtime=$(stat -c %Y "$f" 2>/dev/null || echo 0)
   tags_json=$(jq -cn --arg t "$tags" \
     '($t | split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(length>0)))')
   jq -cn --arg file "$f" --arg title "${title:-Untitled idea}" --arg created "$created" \
+    --arg status "${status:-new}" --arg planned "$planned" --arg project "$project" \
     --argjson mtime "$mtime" --argjson tags "$tags_json" \
-    '{file:$file, title:$title, created:$created, mtime:$mtime, tags:$tags}'
+    '{file:$file, title:$title, created:$created, mtime:$mtime, tags:$tags,
+      status:$status, planned:$planned, project:$project}'
+}
+
+# Every idea in the folder, newest first. Shared by `list` and `related` so
+# there is one parser rather than two that can drift.
+list_json() {
+  local d="$1" f
+  shopt -s nullglob
+  local files=("$d"/*.md)
+  if [[ ${#files[@]} -eq 0 ]]; then
+    echo "[]"
+    return 0
+  fi
+  for f in "${files[@]}"; do parse_one "$f"; done | jq -cs 'sort_by(-.mtime)'
+}
+
+# Siblings worth reading before planning this one: a shared tag is worth 2, a
+# shared title word 1, and it takes 2 to count -- so one shared tag qualifies
+# and one incidental word does not. Returning [] is the point of the thing. An
+# agent told to go and find prior art will find some whether or not it exists;
+# this answers the question once, cheaply, and is allowed to answer "none".
+related_json() {
+  local d="$1" target="$2"
+  list_json "$d" | jq -c --arg target "$target" '
+    def stop: ["with","that","this","from","have","into","when","what","would",
+               "could","should","about","some","more","than","then","they",
+               "them","there","been","just","like","make","want","need","only",
+               "also","does","where","which","because","after","before"];
+    def words: ascii_downcase | gsub("[^a-z0-9]+"; " ") | split(" ")
+               | map(select(length >= 4)) | . - stop | unique;
+    def isect($a; $b): $a - ($a - $b);
+    . as $all
+    | ($all | map(select(.file == $target)) | .[0]) as $me
+    | if $me == null then [] else
+        ($me.tags // []) as $mytags
+      | ($me.title // "" | words) as $mywords
+      | $all
+      | map(select(.file != $target))
+      | map( isect(.tags; $mytags) as $st
+           | (isect((.title | words); $mywords) - $st) as $sw
+           | { file, title, status,
+               shared: ((($st | map("#" + .)) + $sw) | unique),
+               score: (($st | length) * 2 + ($sw | length)) } )
+      | map(select(.score >= 2))
+      | sort_by(-.score)
+      | .[0:3]
+      | map(del(.score))
+      end'
 }
 
 case "$cmd" in
   list)
-    shopt -s nullglob
-    files=("$dir"/*.md)
-    if [[ ${#files[@]} -eq 0 ]]; then
-      echo "[]"
-      exit 0
-    fi
-    for f in "${files[@]}"; do parse_one "$f"; done | jq -cs 'sort_by(-.mtime)'
+    list_json "$dir"
+    ;;
+
+  related)
+    file="${3:-}"
+    [[ -n $file ]] || fail "missing file"
+    resolve_in_dir "$dir" "$file"
+    related_json "$REAL_DIR" "$REAL_FILE"
+    ;;
+
+  reviewed)
+    file="${3:-}"
+    [[ -n $file ]] || fail "missing file"
+    resolve_in_dir "$dir" "$file"
+    fm_set "$REAL_FILE" status planned
+    fm_set "$REAL_FILE" planned "$(date +%F)"
     ;;
 
   new)
@@ -95,22 +252,68 @@ TEMPLATE_EOF
       printf -- '---\n'
       printf 'created: %s\n' "$created"
       printf 'tags: %s\n' "$tags"
+      printf 'status: new\n'
       printf -- '---\n\n'
       printf '## Idea\n%s\n' "$text"
       printf '%s' "$template_tail"
     } > "$file"
 
-    omarchy-notification-send --app-name "Sparks" -t 2000 "Idea logged" "${first_line:-New idea}" >/dev/null 2>&1 || true
+    notify "Idea logged" "${first_line:-New idea}"
     jq -cn --arg file "$file" '{file:$file}'
     ;;
 
   remove)
     file="${3:-}"
     [[ -n $file ]] || fail "missing file"
-    real_dir=$(realpath -e "$dir") || fail "ideas dir not found"
-    real_file=$(realpath -e "$file") || fail "file not found"
-    [[ $real_file == "$real_dir"/* ]] || fail "refusing to remove a file outside the ideas dir"
-    rm -f -- "$real_file"
+    resolve_in_dir "$dir" "$file"
+    rm -f -- "$REAL_FILE"
+    ;;
+
+  set)
+    file="${3:-}"
+    key="${4:-}"
+    value="${5:-}"
+    [[ -n $file ]] || fail "missing file"
+    [[ -n $key ]] || fail "missing key"
+    # Whitelisted: `created` and `tags` are the user's own words, written once
+    # at capture time, and nothing downstream may rewrite them.
+    case "$key" in
+      status | planned | project) ;;
+      *) fail "refusing to set frontmatter key: $key" ;;
+    esac
+    resolve_in_dir "$dir" "$file"
+    fm_set "$REAL_FILE" "$key" "$value"
+    ;;
+
+  search)
+    query="${3:-}"
+    if [[ -z $query ]]; then
+      echo "[]"
+      exit 0
+    fi
+    real_dir=$(realpath -e "$dir") || fail "ideas dir not found: $dir"
+    # Fixed-string, case-insensitive, filenames only -- the panel already has
+    # the titles and tags, so this only has to answer "which bodies match".
+    { grep -rilF --include='*.md' -e "$query" "$real_dir" || true; } \
+      | jq -Rcs 'split("\n") | map(select(length > 0))'
+    ;;
+
+  tags)
+    real_dir=$(realpath -e "$dir") || fail "ideas dir not found: $dir"
+    shopt -s nullglob
+    files=("$real_dir"/*.md)
+    if [[ ${#files[@]} -eq 0 ]]; then
+      echo "[]"
+      exit 0
+    fi
+    for f in "${files[@]}"; do fm_get "$f" tags; echo; done \
+      | tr ',' '\n' \
+      | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+      | { grep -v '^$' || true; } \
+      | sort | uniq -c | sort -k1,1nr -k2,2 \
+      | jq -Rcs 'split("\n") | map(select(length > 0)
+                 | capture("^\\s*(?<count>[0-9]+)\\s+(?<tag>.+)$")
+                 | {tag: .tag, count: (.count | tonumber)})'
     ;;
 
   open)
@@ -126,6 +329,103 @@ TEMPLATE_EOF
     else
       xdg-open "$file" >/dev/null 2>&1
     fi
+    ;;
+
+  review)
+    file="${3:-}"
+    [[ -n $file ]] || fail "missing file"
+    resolve_in_dir "$dir" "$file"
+    require_agent
+
+    skill="$SPARKS_ROOT/agent/skills/spark-review/SKILL.md"
+
+    # Everything else about the idea -- title, tags, status -- is in the file
+    # the prompt points at, so naming it here would only be a second copy to
+    # go stale. The overlap block is the exception: it is the one thing the
+    # agent cannot work out without reading the whole folder.
+    related_block=""
+    related=$(related_json "$REAL_DIR" "$REAL_FILE")
+    if [[ $(jq 'length' <<<"$related") -gt 0 ]]; then
+      related_block=$(
+        printf '\nIdeas that share tags with it -- read them, and ignore any that turn out\nto be unrelated:\n\n%s\n' \
+          "$(jq -r '.[] | "  \(.file)\n      (\(.status))  \(.shared | join(" "))"' <<<"$related")"
+      )
+      related_block+=$'\n'
+    fi
+
+    prompt=$(
+      cat <<PROMPT
+Review this idea into a planning brief:
+
+  $REAL_FILE
+$related_block
+Follow the spark-review skill. If your harness has no skill mechanism, read
+this file and follow it instead:
+
+  $skill
+
+When the brief is written, run:
+
+  $SPARKS_ROOT/bin/sparks reviewed "$REAL_DIR" "$REAL_FILE"
+PROMPT
+    )
+
+    # Start in the ideas folder so sibling ideas are readable, and so
+    # omarchy-agent's "\$PWD is \$HOME" redirect into ~/Work doesn't fire.
+    cd "$REAL_DIR"
+    exec omarchy-agent-prompt "$prompt"
+    ;;
+
+  create)
+    file="${3:-}"
+    projects_root="${4:-$HOME/Work}"
+    [[ -n $file ]] || fail "missing file"
+    resolve_in_dir "$dir" "$file"
+    require_agent
+
+    if ! brief_filled "$REAL_FILE"; then
+      notify "Review this idea first" "Its planning brief is still empty."
+      fail "planning brief is empty -- run 'sparks review' first"
+    fi
+
+    base=$(basename "$REAL_FILE" .md)
+    slug=$(printf '%s' "$base" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}(-[0-9]+)?-//')
+    [[ -n $slug ]] || slug="$base"
+    proj="$projects_root/$slug"
+
+    if [[ -e $proj && -n $(ls -A "$proj" 2>/dev/null) ]]; then
+      notify "Workspace already exists" "$proj"
+      fail "workspace directory exists and is not empty: $proj"
+    fi
+
+    mkdir -p "$proj"
+    git -C "$proj" init -q >/dev/null 2>&1 || true
+    # A symlink, not a copy: the brief and the idea note stay one document, so
+    # the plan the agent keeps current is the note the user opens from the bar.
+    ln -sfn "$REAL_FILE" "$proj/BRIEF.md"
+
+    fm_set "$REAL_FILE" status creating
+    fm_set "$REAL_FILE" project "$proj"
+
+    skill="$SPARKS_ROOT/agent/skills/spark-create/SKILL.md"
+
+    prompt=$(
+      cat <<PROMPT
+Make this idea real. Its brief is already written:
+
+  workspace: $proj
+  brief:     $proj/BRIEF.md
+             a symlink to $REAL_FILE -- edit it in place, never replace it
+
+Follow the spark-create skill. If your harness has no skill mechanism, read
+this file and follow it instead:
+
+  $skill
+PROMPT
+    )
+
+    cd "$proj"
+    exec omarchy-agent-prompt "$prompt"
     ;;
 
   *)

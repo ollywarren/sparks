@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "ollywarren.sparks",
   "name": "Sparks",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Olly Warren",
   "license": "MIT",
-  "description": "Quick-capture idea logging: a bar icon lists your ideas with tag filtering, and a keybinding pops a floating window to jot or dictate a new one. Ideas are saved as plain Markdown files.",
+  "description": "Quick-capture idea logging for ideas of any kind: a bar icon lists them with search, tag and status filtering, and a keybinding pops a floating window to jot or dictate a new one. Hand one to your agent to research into a planning brief, then to go and make it. Ideas are saved as plain Markdown files.",
   "kinds": [
     "bar-widget",
     "overlay"
@@ -16,13 +16,14 @@
   },
   "barWidget": {
     "displayName": "Sparks",
-    "description": "List of logged ideas with tag filtering and quick delete.",
+    "description": "List of logged ideas with search, tag and status filtering, and one-click handoff to your agent.",
     "category": "Productivity",
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
       "icon": "✨",
       "ideasDir": "~/Notes/ideas",
+      "projectsDir": "~/Work",
       "panelWidth": 380,
       "maxListItems": 40
     },
@@ -37,6 +38,12 @@
         "type": "string",
         "label": "Ideas folder",
         "defaultValue": "~/Notes/ideas"
+      },
+      {
+        "key": "projectsDir",
+        "type": "string",
+        "label": "Workspace folder (where Create scaffolds)",
+        "defaultValue": "~/Work"
       },
       {
         "key": "panelWidth",
