@@ -39,7 +39,24 @@ leaves them with a note that has stopped tracking the work.
    dead, a source moved, a price is now wrong — say so now rather than silently
    working around it.
 
-Start once they have answered.
+Start once they have answered. If you were started in plan mode, that approval
+covers the steps you listed and nothing more.
+
+## Consent
+
+Omarchy can start this session with approvals switched off, so your own
+judgement may be the only thing that stops you and asks. Stop and ask anyway.
+
+Inside the workspace, work freely: files, builds, commits. Outside it, ask
+first, name the specific action, and wait for an explicit yes. One yes covers
+one action, not the category. That means:
+
+- installing, removing or updating packages
+- starting, stopping, enabling or reloading services and daemons
+- anything under `~/.config`, the compositor, keybindings or the bar
+- `sudo` or `pkexec`
+- pushing, deploying, publishing, creating accounts, sending messages
+- spending money
 
 ## While working
 
@@ -51,7 +68,7 @@ Start once they have answered.
 - Never rewrite `## Idea`, `created:` or `tags:`.
 - Commit as you go, with messages that will make sense in a year. That is what
   makes your work undoable, whether it is code or a manuscript. No remotes or
-  pushes unless asked.
+  pushes without a yes for that push.
 
 Leave the workspace in a state they can pick up: working, or plainly labelled
 as unfinished with what is missing.
