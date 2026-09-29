@@ -5,11 +5,11 @@
 #
 # Usage:
 #   sparks list   <dir>                      -> JSON array, newest first
-#   sparks new    <dir> <text>               -> writes a new idea, prints {"file":...}
+#   sparks new    <dir> < text               -> writes a new idea, prints {"file":...}
 #   sparks remove <dir> <file>               -> deletes one idea file
 #   sparks open   <file>                     -> opens it in the markdown app
 #   sparks set    <dir> <file> <key> <value> -> rewrites one frontmatter field
-#   sparks search <dir> <query>              -> JSON array of matching file paths
+#   sparks search <dir> < query              -> JSON array of matching file paths
 #   sparks tags   <dir>                      -> JSON array of {tag, count}
 #   sparks related <dir> <file>              -> up to 3 siblings that overlap it
 #   sparks reviewed <dir> <file>             -> marks a brief as written
@@ -24,6 +24,10 @@
 # read-only, proposes before acting), ask (prompts before each action) or auto
 # (Omarchy's own auto-approve launch). SPARKS_DRY_RUN=1 prints the agent argv
 # instead of launching it.
+#
+# What the user typed -- an idea's text, a search query -- arrives on stdin,
+# never in argv. Every process table on the machine is world-readable, so an
+# argument is a copy of the note handed to anything that cares to look.
 set -euo pipefail
 
 NOTIFIED=false
@@ -351,7 +355,13 @@ case "$cmd" in
     ;;
 
   new)
-    text="${3:-}"
+    # The idea itself comes down stdin rather than argv: `ps` is readable by
+    # every process on the machine, so a note passed as an argument is a note
+    # published to all of them for as long as this script runs. Refusing an
+    # argument outright keeps a caller from quietly reopening that hole.
+    (($# <= 2)) || fail "sparks new reads the idea text from stdin"
+    [[ ! -t 0 ]] || echo "sparks: reading the idea from stdin (end with Ctrl-D)" >&2
+    text=$(cat)
     [[ -n $(printf '%s' "$text" | tr -d '[:space:]') ]] || fail "empty idea text"
     mkdir -p "$dir"
 
@@ -433,7 +443,9 @@ TEMPLATE_EOF
     ;;
 
   search)
-    query="${3:-}"
+    # Same reasoning as `new`: what the user typed stays out of argv.
+    (($# <= 2)) || fail "sparks search reads the query from stdin"
+    query=$(cat)
     if [[ -z $query ]]; then
       echo "[]"
       exit 0

@@ -302,6 +302,18 @@ same plugin (`bar-widget` and `overlay` kinds), so each is toggled separately.
   `omarchy-launch-tui` (Plan/Ask) or `omarchy-agent-prompt` (Auto). All of
   these ship with Omarchy or your desktop.
 
+### Nothing is passed on a command line
+
+What you type stays out of `argv`. An idea's text and a search query both go to
+`bin/sparks` down a pipe, because a process's arguments are readable by every
+other process on the machine — `ps` is enough — while its stdin is not. The
+script refuses either as an argument, so no caller can put one back.
+
+What does appear in a command line is a file path, because a path is what the
+script is being asked to act on. Idea file names are built from the first line
+of the note, so that line is legible in a path — as it already is to anything
+that can list the folder.
+
 ### Nothing changes in the background
 
 Sparks has no timer, no daemon and no migration step. Nothing is written when
@@ -357,8 +369,8 @@ and all process handoff, so the QML stays UI-only. Test it directly:
 
 ```bash
 ./bin/sparks list     ~/Notes/ideas
-./bin/sparks new      ~/Notes/ideas "A test idea #testing"
-./bin/sparks search   ~/Notes/ideas piper
+printf '%s' "A test idea #testing" | ./bin/sparks new ~/Notes/ideas
+printf '%s' piper | ./bin/sparks search ~/Notes/ideas
 ./bin/sparks tags     ~/Notes/ideas
 ./bin/sparks related  ~/Notes/ideas <file>   # overlapping ideas, or []
 ./bin/sparks set      ~/Notes/ideas <file> status archived
@@ -370,6 +382,11 @@ SPARKS_DRY_RUN=1 ./bin/sparks review ~/Notes/ideas <file> --confirmed --mode ask
 
 `review` and `create` refuse to run without `--confirmed`. `--mode` defaults to
 `plan`. `SPARKS_DRY_RUN=1` prints the agent command line instead of opening it.
+
+`new` and `search` read what you typed from stdin and refuse it as an argument,
+so neither an idea nor a search term is ever visible in the process table. Run
+either with no input on a terminal and it waits for you to type and press
+Ctrl-D.
 
 `set` only accepts `status`, `planned` and `project` — `created` and `tags` are
 yours, written once at capture time. Every command that names a file refuses

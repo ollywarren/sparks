@@ -350,8 +350,7 @@ Panel {
       searchDebounce.restart()
       return
     }
-    searchProc.command = ["bash", root.scriptPath, "search", root.ideasDir, q]
-    searchProc.running = true
+    searchProc.fire(q)
   }
 
   // ------------------------------------------------------------ processes
@@ -373,8 +372,22 @@ Panel {
     }
   }
 
+  // The query goes down stdin for the same reason the captured idea does: what
+  // the user typed would otherwise sit in a world-readable process line.
   Process {
     id: searchProc
+    property string pending: ""
+    function fire(query) {
+      pending = query
+      stdinEnabled = true
+      command = ["bash", root.scriptPath, "search", root.ideasDir]
+      running = true
+    }
+    onStarted: {
+      write(pending)
+      pending = ""
+      stdinEnabled = false
+    }
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {

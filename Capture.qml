@@ -153,11 +153,22 @@ Item {
     Qt.callLater(function() { editor.forceActiveFocus() })
   }
 
+  // The idea goes down stdin, never argv: an argument would put the whole note
+  // in a process line that every other process on the machine can read. The
+  // pipe is closed straight after the write so `new` sees the end of the text.
   Process {
     id: saveProc
+    property string pending: ""
     function fire(scriptPath, dir, text) {
-      command = ["bash", scriptPath, "new", dir, text]
+      pending = text
+      stdinEnabled = true
+      command = ["bash", scriptPath, "new", dir]
       running = true
+    }
+    onStarted: {
+      write(pending)
+      pending = ""
+      stdinEnabled = false
     }
     stdout: StdioCollector { waitForEnd: true }
     stderr: StdioCollector {
