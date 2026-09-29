@@ -26,6 +26,38 @@ conversation.
 - **The `created:` and `tags:` frontmatter** — written once, at capture.
 - **Any other idea file** — read freely, edit only the one you were given.
 
+## Read-only
+
+A review is research, not a trial run. This is the machine they are using right
+now, and the user asked for a brief, not for changes — so the review changes
+nothing on it, however reversible, and whatever permissions your harness has
+been launched with.
+
+The only things you change are the idea file you were given (outside the parts
+above) and its status, through the `sparks reviewed` command in the prompt.
+
+Commands that only look are fine: reading files, `pacman -Q`, `lscpu`,
+`hyprctl … -j` queries, `omarchy commands`, `--help`, `--version`. Never:
+
+- install, remove or update packages, or run anything that downloads and
+  executes code
+- start, stop, enable, restart or reload a service or daemon
+- `hyprctl keyword`, `dispatch` or `reload`, or anything else that registers
+  state with the compositor
+- `omarchy` commands that change something — theme, toggle, refresh, restart,
+  pkg, install, hook, bar, plugin
+- edit configuration anywhere, or any file other than the idea
+- `sudo` or `pkexec`
+- git commands that write
+- anything that commits them — messages sent, accounts made, money spent
+
+If the only way to answer a question is to change something, leave it
+unanswered. Put it under **Constraints** marked *unverified*, and add the check
+to **Plan** as a step they can run when they choose to.
+
+If you were started in plan or ask mode, research first, then show them the
+brief and write it into the file once they approve.
+
 ## Research before you write
 
 A brief that only restates the idea is worse than none: it looks like progress.
@@ -42,10 +74,10 @@ against any amount of "consider performance".
 
 Look at what they already have before proposing something new: their own
 files, notes and earlier attempts at the subject. Where the idea touches this
-machine, check the machine rather than assuming — what is installed, what the
-hardware allows, `omarchy commands` for anything desktop-shaped, `~/.config/`
-for how they have it set up, `~/.config/omarchy/plugins/` for what they have
-already built.
+machine, check the machine with read-only commands rather than assuming — what
+is installed, what the hardware allows, `omarchy commands` for anything
+desktop-shaped, `~/.config/` for how they have it set up,
+`~/.config/omarchy/plugins/` for what they have already built.
 
 If the prompt listed **related ideas**, read them — but they were picked by
 shared tags, so some will be irrelevant. Mention one only where the
@@ -56,13 +88,6 @@ reasoning, not as established fact.
 Search the **web** only where the idea leans on something outside their
 control — a tool, a service, a supplier, a venue — to confirm it exists, is
 current, and does what the idea assumes.
-
-Prefer read-only probes. This is the machine they are using right now, and the
-world is the one they live in — so if answering a question would change
-something real, don't. Where you must, keep it reversible: registering
-something with the compositor, reloading a daemon, installing a package. Undo
-it afterwards and say in your summary what you did. Never anything that
-commits them — no messages sent, no accounts made, no money spent.
 
 Say what you could not check rather than asserting it. A confidently wrong
 constraint sends them down a dead end months later.
