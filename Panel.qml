@@ -28,6 +28,41 @@ Panel {
   readonly property string ideasDir: expandHome(ideasDirRaw)
   readonly property string projectsDir: expandHome(setting("projectsDir", "~/Work"))
 
+  // Handing an idea to an agent is opt-in: until it is switched on in the
+  // settings view, the popup has no Review or Create and never launches one.
+  // Once on, the agent starts in plan mode unless the user picks otherwise.
+  readonly property bool agentHandoff: {
+    var v = setting("agentHandoff", false)
+    return v === true || v === "true"
+  }
+  readonly property string agentMode: {
+    var v = String(setting("agentMode", "plan"))
+    return (v === "ask" || v === "auto") ? v : "plan"
+  }
+  property string defaultAgent: ""
+
+  readonly property var modeOptions: [
+    { value: "plan", label: "Plan", tooltip: "Read-only: proposes, then waits for your approval" },
+    { value: "ask",  label: "Ask",  tooltip: "Prompts before each action" },
+    { value: "auto", label: "Auto", tooltip: "Omarchy's auto-approve launch" }
+  ]
+
+  function modeLabel(mode) {
+    return mode === "auto" ? "Auto-approve" : (mode === "ask" ? "Ask" : "Plan")
+  }
+
+  function modeCaption(mode) {
+    if (mode === "auto")
+      return "The agent acts without asking, as Omarchy launches it by default. Review is still told to change nothing, but nothing enforces it."
+    if (mode === "ask")
+      return "The agent prompts you before each action it takes."
+    return "Read-only. The agent researches and proposes, and changes nothing until you approve."
+  }
+
+  function agentName() {
+    return root.defaultAgent !== "" ? root.defaultAgent : "your default agent"
+  }
+
   function expandHome(path) {
     var home = Quickshell.env("HOME") || ""
     var p = String(path || "")
@@ -48,7 +83,10 @@ Panel {
   // the panel can't.
   property var bodyMatches: []
   property int selectedIndex: -1
-  property string pendingDeleteFile: ""
+  property bool showSettings: false
+  // What the confirm dialog is asking about: { kind: "delete" | "review" |
+  // "create" | "auto", file }. Nothing it guards runs until it is confirmed.
+  property var pendingAction: null
 
   readonly property var statusOptions: [
     { value: "active",   label: "Active",   tooltip: "New, planned and in progress" },
@@ -167,16 +205,21 @@ Panel {
     actionProc.running = true
   }
 
-  // The two agent handoffs. bin/sparks assembles the prompt and hands it to
-  // omarchy-agent-prompt, which opens the user's default agent in a terminal
-  // — so the panel gets out of the way once the process is away.
+  // The two agent handoffs. bin/sparks assembles the prompt and opens the
+  // user's default agent in a terminal, in the chosen mode — so the panel gets
+  // out of the way once the process is away. Only reachable from the confirm
+  // dialog, and bin/sparks refuses a handoff without --confirmed.
   function reviewIdea(file) {
-    Util.execArgv(["bash", root.scriptPath, "review", root.ideasDir, file])
+    if (!root.agentHandoff) return
+    Util.execArgv(["bash", root.scriptPath, "review", root.ideasDir, file,
+                   "--confirmed", "--mode", root.agentMode])
     root.close()
   }
 
   function createIdea(file) {
-    Util.execArgv(["bash", root.scriptPath, "create", root.ideasDir, file, root.projectsDir])
+    if (!root.agentHandoff) return
+    Util.execArgv(["bash", root.scriptPath, "create", root.ideasDir, file, root.projectsDir,
+                   "--confirmed", "--mode", root.agentMode])
     root.close()
   }
 
@@ -185,17 +228,96 @@ Panel {
     root.close()
   }
 
-  function requestDelete(file) {
-    pendingDeleteFile = file
+  // The workspace name `sparks create` will use: the file name without its
+  // capture timestamp.
+  function workspaceFor(file) {
+    var base = String(file).split("/").pop().replace(/\.md$/, "")
+    var slug = base.replace(/^\d{4}-\d{2}-\d{2}-\d{6}(-\d+)?-/, "")
+    return root.projectsDir + "/" + (slug || base)
+  }
+
+  function requestAction(kind, file) {
+    root.pendingAction = { kind: kind, file: file || "" }
     confirmDialog.opened = true
   }
 
-  function confirmDelete() {
+  function requestDelete(file) { requestAction("delete", file) }
+
+  function confirmMessage() {
+    var a = root.pendingAction
+    if (!a) return ""
+    var mode = root.modeLabel(root.agentMode)
+    if (a.kind === "review")
+      return "Hand this idea to " + root.agentName() + " in " + mode + " mode? It is given the idea's"
+        + " text and your ideas folder, and sends what it reads to that agent's provider."
+        + (root.agentMode === "auto"
+           ? " In Auto it acts without asking."
+           : " It changes nothing on this machine, and writes the brief into this idea file once you approve.")
+    if (a.kind === "create")
+      return "Create " + root.workspaceFor(a.file) + " (a git repo and a BRIEF.md link to this note) and hand"
+        + " it to " + root.agentName() + " in " + mode + " mode? It is given the idea's text, works inside that"
+        + " folder, and asks before anything outside it."
+    if (a.kind === "auto")
+      return "Auto-approve lets the agent run commands, install packages and change settings without asking you first. Use it?"
+    return "Delete this idea? This can't be undone."
+  }
+
+  function confirmLabel() {
+    var kind = root.pendingAction ? root.pendingAction.kind : ""
+    if (kind === "review") return "Review"
+    if (kind === "create") return "Create"
+    if (kind === "auto") return "Use auto"
+    return "Delete"
+  }
+
+  function confirmPending() {
     confirmDialog.opened = false
-    if (!pendingDeleteFile) return
-    removeProc.command = ["bash", root.scriptPath, "remove", root.ideasDir, pendingDeleteFile]
-    removeProc.running = true
-    pendingDeleteFile = ""
+    var a = root.pendingAction
+    root.pendingAction = null
+    if (!a) return
+    if (a.kind === "review") root.reviewIdea(a.file)
+    else if (a.kind === "create") root.createIdea(a.file)
+    else if (a.kind === "auto") root.writeSetting("agentMode", "auto", false)
+    else if (a.kind === "delete") {
+      removeProc.command = ["bash", root.scriptPath, "remove", root.ideasDir, a.file]
+      removeProc.running = true
+    }
+  }
+
+  function cancelPending() {
+    confirmDialog.opened = false
+    root.pendingAction = null
+  }
+
+  // Settings are written the way `omarchy bar set` writes them — onto this
+  // widget's entry in shell.json, which hot-reloads back into setting(). Only
+  // ever called from a control the user has just operated.
+  function writeSetting(key, value, isJson) {
+    var argv = ["omarchy-bar", "set", root.moduleName, key, String(value)]
+    if (isJson) argv.push("--json")
+    settingsQueue.push(argv)
+    root.drainSettings()
+  }
+
+  property var settingsQueue: []
+  function drainSettings() {
+    if (settingsProc.running || settingsQueue.length === 0) return
+    settingsProc.command = settingsQueue.shift()
+    settingsProc.running = true
+  }
+
+  function requestMode(mode) {
+    if (mode === root.agentMode) return
+    // Moving to auto takes away the agent's own prompts, so it asks first;
+    // plan and ask only ever make the agent more careful.
+    if (mode === "auto") root.requestAction("auto", "")
+    else root.writeSetting("agentMode", mode, false)
+  }
+
+  function applyFolder(key, field, current) {
+    var v = field.text.trim()
+    if (v === "" || v === current) { field.text = current; return }
+    root.writeSetting(key, v, false)
   }
 
   function openIdeasFolder() {
@@ -284,6 +406,29 @@ Panel {
     onRunningChanged: if (!running) root.refresh()
   }
 
+  Process {
+    id: settingsProc
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var err = String(text || "").trim()
+        if (err) console.warn("ollywarren.sparks: saving a setting failed:", err)
+      }
+    }
+    onRunningChanged: if (!running) root.drainSettings()
+  }
+
+  // Only to name the agent in the confirm dialog; bin/sparks reads it again
+  // at launch, so a stale name here can't change what runs.
+  Process {
+    id: agentProc
+    command: ["omarchy-default-agent"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.defaultAgent = String(text || "").trim()
+    }
+  }
+
   Timer {
     id: searchDebounce
     interval: 250
@@ -296,7 +441,9 @@ Panel {
       root.query = ""
       root.bodyMatches = []
       root.selectedIndex = -1
+      root.showSettings = false
       refresh()
+      if (!agentProc.running) agentProc.running = true
     }
   }
 
@@ -343,7 +490,7 @@ Panel {
       anchors.fill: parent
       // The search field owns the keyboard while it has focus — otherwise the
       // catcher would eat h/j/k/l and x before they reached the text box.
-      blocked: searchField.activeFocus
+      blocked: searchField.activeFocus || ideasDirField.activeFocus || projectsDirField.activeFocus
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
@@ -355,10 +502,22 @@ Panel {
         PanelHero {
           width: parent.width
           title: "Sparks"
-          meta: root.filteredIdeas.length === root.ideas.length
-            ? (root.ideas.length + " idea" + (root.ideas.length === 1 ? "" : "s"))
-            : (root.filteredIdeas.length + " of " + root.ideas.length
-               + (root.activeTag === "" ? "" : " · #" + root.activeTag))
+          meta: root.showSettings
+            ? "Settings"
+            : root.filteredIdeas.length === root.ideas.length
+              ? (root.ideas.length + " idea" + (root.ideas.length === 1 ? "" : "s"))
+              : (root.filteredIdeas.length + " of " + root.ideas.length
+                 + (root.activeTag === "" ? "" : " · #" + root.activeTag))
+          trailingControl: Component {
+            PanelActionButton {
+              iconText: root.showSettings ? "󰁍" : "󰒓"
+              tooltipText: root.showSettings ? "Back to ideas" : "Settings"
+              foreground: root.dim
+              hoverColor: root.accent
+              fontFamily: root.fontFamily
+              onClicked: root.showSettings = !root.showSettings
+            }
+          }
           foreground: root.foreground
           fontFamily: root.fontFamily
           iconComponent: Component {
@@ -372,274 +531,450 @@ Panel {
           }
         }
 
-        // ---------------------------------------------------------- search
-        TextField {
-          id: searchField
+        // The list and the settings share the popup; one shows at a time.
+        Column {
+          id: listPage
           width: parent.width
-          placeholderText: "Search ideas… #tag to filter"
-          foreground: root.foreground
-          accent: root.accent
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
+          spacing: Style.space(10)
+          visible: !root.showSettings
 
-          onTextChanged: root.query = text
+          // -------------------------------------------------------- search
+          TextField {
+            id: searchField
+            width: parent.width
+            placeholderText: "Search ideas… #tag to filter"
+            foreground: root.foreground
+            accent: root.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
 
-          Keys.priority: Keys.BeforeItem
-          Keys.onPressed: function(event) {
-            if (event.key === Qt.Key_Escape) {
-              // First Esc clears a query, second closes — the clipboard
-              // panel's behaviour, and the one people expect from a filter.
-              if (searchField.text !== "") searchField.text = ""
-              else root.close()
-              event.accepted = true
-            } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
-              root.switchPanel((event.modifiers & Qt.ShiftModifier)
-                || event.key === Qt.Key_Backtab ? -1 : 1)
-              event.accepted = true
-            } else if (event.key === Qt.Key_Down) {
-              root.moveSelection(1)
-              event.accepted = true
-            } else if (event.key === Qt.Key_Up) {
-              root.moveSelection(-1)
-              event.accepted = true
-            } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-              var idea = root.selectedIdea()
-              if (idea) root.openIdea(idea.file)
-              event.accepted = true
-            } else if (event.key === Qt.Key_Delete && (event.modifiers & Qt.ShiftModifier)) {
-              var target = root.selectedIdea()
-              if (target) root.requestDelete(target.file)
-              event.accepted = true
+            onTextChanged: root.query = text
+
+            Keys.priority: Keys.BeforeItem
+            Keys.onPressed: function(event) {
+              if (event.key === Qt.Key_Escape) {
+                // First Esc clears a query, second closes — the clipboard
+                // panel's behaviour, and the one people expect from a filter.
+                if (searchField.text !== "") searchField.text = ""
+                else root.close()
+                event.accepted = true
+              } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+                root.switchPanel((event.modifiers & Qt.ShiftModifier)
+                  || event.key === Qt.Key_Backtab ? -1 : 1)
+                event.accepted = true
+              } else if (event.key === Qt.Key_Down) {
+                root.moveSelection(1)
+                event.accepted = true
+              } else if (event.key === Qt.Key_Up) {
+                root.moveSelection(-1)
+                event.accepted = true
+              } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                var idea = root.selectedIdea()
+                if (idea) root.openIdea(idea.file)
+                event.accepted = true
+              } else if (event.key === Qt.Key_Delete && (event.modifiers & Qt.ShiftModifier)) {
+                var target = root.selectedIdea()
+                if (target) root.requestDelete(target.file)
+                event.accepted = true
+              }
             }
           }
-        }
 
-        // --------------------------------------------------- status filter
-        ButtonGroup {
-          width: parent.width
-          options: root.statusOptions
-          value: root.statusFilter
-          foreground: root.foreground
-          accent: root.accent
-          fontFamily: root.fontFamily
-          fontSize: Style.font.bodySmall
-          focusable: false
-          onChanged: function(value) {
-            root.statusFilter = value
-            root.selectedIndex = -1
-          }
-        }
-
-        // ------------------------------------------------------ tag chips
-        Flow {
-          width: parent.width
-          spacing: Style.space(6)
-          visible: root.tagCounts.length > 0
-
-          Button {
-            text: "All"
-            bordered: true
-            focusable: false
-            selected: root.activeTag === ""
+          // ------------------------------------------------- status filter
+          ButtonGroup {
+            width: parent.width
+            options: root.statusOptions
+            value: root.statusFilter
             foreground: root.foreground
             accent: root.accent
             fontFamily: root.fontFamily
-            onClicked: root.activeTag = ""
+            fontSize: Style.font.bodySmall
+            focusable: false
+            onChanged: function(value) {
+              root.statusFilter = value
+              root.selectedIndex = -1
+            }
           }
 
-          Repeater {
-            model: root.tagCounts
-            delegate: Button {
-              required property var modelData
-              text: "#" + modelData.tag + " " + modelData.count
+          // ---------------------------------------------------- tag chips
+          Flow {
+            width: parent.width
+            spacing: Style.space(6)
+            visible: root.tagCounts.length > 0
+
+            Button {
+              text: "All"
               bordered: true
               focusable: false
-              selected: root.activeTag === modelData.tag
+              selected: root.activeTag === ""
               foreground: root.foreground
               accent: root.accent
               fontFamily: root.fontFamily
-              onClicked: root.activeTag = (root.activeTag === modelData.tag ? "" : modelData.tag)
+              onClicked: root.activeTag = ""
+            }
+
+            Repeater {
+              model: root.tagCounts
+              delegate: Button {
+                required property var modelData
+                text: "#" + modelData.tag + " " + modelData.count
+                bordered: true
+                focusable: false
+                selected: root.activeTag === modelData.tag
+                foreground: root.foreground
+                accent: root.accent
+                fontFamily: root.fontFamily
+                onClicked: root.activeTag = (root.activeTag === modelData.tag ? "" : modelData.tag)
+              }
+            }
+          }
+
+          PanelSeparator { width: parent.width; visible: root.tagCounts.length > 0 }
+
+          // ---------------------------------------------------------- list
+          Text {
+            width: parent.width
+            visible: root.filteredIdeas.length === 0
+            text: root.ideas.length === 0
+              ? "No ideas yet — use your capture keybinding to log one."
+              : "Nothing matches these filters."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.Wrap
+          }
+
+          ListView {
+            id: listView
+            width: parent.width
+            height: Math.min(contentHeight, Style.space(360))
+            model: root.filteredIdeas
+            spacing: Style.space(4)
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            visible: root.filteredIdeas.length > 0
+
+            delegate: Rectangle {
+              id: row
+              required property var modelData
+              required property int index
+
+              readonly property string rowStatus: root.statusOf(modelData)
+              readonly property bool selected: root.selectedIndex === index
+              readonly property bool showActions: ideaHover.hovered || selected
+
+              width: ListView.view.width
+              height: ideaRow.implicitHeight + Style.space(12)
+              radius: Style.cornerRadius
+              color: selected
+                ? Style.selectedFillFor(root.foreground, root.accent)
+                : (ideaHover.hovered ? Util.alpha(root.foreground, 0.06) : "transparent")
+
+              HoverHandler { id: ideaHover }
+              MouseArea {
+                anchors.fill: parent
+                anchors.rightMargin: row.showActions ? actions.width + Style.space(8) : 0
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.selectedIndex = row.index
+                  root.openIdea(row.modelData.file)
+                }
+              }
+
+              Column {
+                id: ideaRow
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.leftMargin: Style.space(6)
+                // The action cluster only reserves room while it is showing, so
+                // a resting row gets the full width for its title.
+                anchors.rightMargin: Style.space(6)
+                  + (row.showActions ? actions.width + Style.space(4) : 0)
+                spacing: Style.space(2)
+
+                Text {
+                  width: parent.width
+                  textFormat: Text.PlainText
+                  text: row.modelData.title
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  elide: Text.ElideRight
+                }
+
+                Text {
+                  width: parent.width
+                  textFormat: Text.PlainText
+                  text: root.relativeTime(row.modelData.mtime)
+                    + (row.rowStatus === "new" ? "" : "  ·  " + row.rowStatus)
+                    + (row.modelData.tags && row.modelData.tags.length
+                       ? "  ·  #" + row.modelData.tags.join(" #") : "")
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  elide: Text.ElideRight
+                }
+              }
+
+              // Revealed on hover or when the row is the keyboard selection, so
+              // a 380px row isn't permanently five icons wide.
+              Row {
+                id: actions
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.rightMargin: Style.space(4)
+                spacing: Style.space(2)
+                visible: row.showActions
+
+                PanelActionButton {
+                  visible: root.agentHandoff
+                  iconText: "󰧑"
+                  tooltipText: (row.rowStatus === "new"
+                    ? "Research this into a brief with your agent"
+                    : "Re-review with your agent") + " · " + root.modeLabel(root.agentMode)
+                  foreground: root.dim
+                  hoverColor: root.accent
+                  fontFamily: root.fontFamily
+                  onClicked: root.requestAction("review", row.modelData.file)
+                }
+
+                PanelActionButton {
+                  visible: root.agentHandoff && row.modelData.project === "" && row.rowStatus === "planned"
+                  iconText: "󰐊"
+                  tooltipText: "Create it — a workspace, and your agent to start in it · " + root.modeLabel(root.agentMode)
+                  foreground: root.dim
+                  hoverColor: root.accent
+                  fontFamily: root.fontFamily
+                  onClicked: root.requestAction("create", row.modelData.file)
+                }
+
+                PanelActionButton {
+                  visible: root.agentHandoff && row.modelData.project !== ""
+                  iconText: "󰝰"
+                  tooltipText: "Open " + row.modelData.project
+                  foreground: root.dim
+                  hoverColor: root.accent
+                  fontFamily: root.fontFamily
+                  onClicked: root.openProject(row.modelData.project)
+                }
+
+                PanelActionButton {
+                  visible: row.rowStatus !== "done" && row.rowStatus !== "archived"
+                  iconText: "󰗠"
+                  tooltipText: "Mark done"
+                  foreground: root.dim
+                  hoverColor: root.accent
+                  fontFamily: root.fontFamily
+                  onClicked: root.setStatus(row.modelData.file, "done")
+                }
+
+                PanelActionButton {
+                  iconText: row.rowStatus === "archived" ? "󰑐" : "󱉙"
+                  tooltipText: row.rowStatus === "archived" ? "Restore" : "Archive"
+                  foreground: root.dim
+                  hoverColor: root.accent
+                  fontFamily: root.fontFamily
+                  onClicked: root.setStatus(row.modelData.file,
+                    row.rowStatus === "archived" ? "new" : "archived")
+                }
+
+                PanelActionButton {
+                  iconText: "󰆴"
+                  tooltipText: "Delete"
+                  foreground: root.dim
+                  hoverColor: Color.urgent
+                  fontFamily: root.fontFamily
+                  onClicked: root.requestDelete(row.modelData.file)
+                }
+              }
+            }
+          }
+
+          PanelSeparator { width: parent.width }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+
+            Button {
+              text: "Open folder"
+              iconText: "󰉋"
+              bordered: true
+              focusable: false
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              tooltipText: root.ideasDir
+              onClicked: root.openIdeasFolder()
             }
           }
         }
 
-        PanelSeparator { width: parent.width; visible: root.tagCounts.length > 0 }
-
-        // ------------------------------------------------------------ list
-        Text {
+        // -------------------------------------------------------- settings
+        // Everything that decides what Sparks may do on this machine, in one
+        // place. Each control writes its own key the moment it is operated;
+        // nothing here is saved on the user's behalf.
+        Column {
+          id: settingsPage
           width: parent.width
-          visible: root.filteredIdeas.length === 0
-          text: root.ideas.length === 0
-            ? "No ideas yet — use your capture keybinding to log one."
-            : "Nothing matches these filters."
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
-          wrapMode: Text.Wrap
-        }
+          spacing: Style.space(10)
+          visible: root.showSettings
 
-        ListView {
-          id: listView
-          width: parent.width
-          height: Math.min(contentHeight, Style.space(360))
-          model: root.filteredIdeas
-          spacing: Style.space(4)
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          visible: root.filteredIdeas.length > 0
+          PanelSeparator { width: parent.width }
+          PanelSectionHeader {
+            text: "AGENT HANDOFF"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
 
-          delegate: Rectangle {
-            id: row
-            required property var modelData
-            required property int index
-
-            readonly property string rowStatus: root.statusOf(modelData)
-            readonly property bool selected: root.selectedIndex === index
-            readonly property bool showActions: ideaHover.hovered || selected
-
-            width: ListView.view.width
-            height: ideaRow.implicitHeight + Style.space(12)
-            radius: Style.cornerRadius
-            color: selected
-              ? Style.selectedFillFor(root.foreground, root.accent)
-              : (ideaHover.hovered ? Util.alpha(root.foreground, 0.06) : "transparent")
-
-            HoverHandler { id: ideaHover }
-            MouseArea {
-              anchors.fill: parent
-              anchors.rightMargin: row.showActions ? actions.width + Style.space(8) : 0
-              cursorShape: Qt.PointingHandCursor
-              onClicked: {
-                root.selectedIndex = row.index
-                root.openIdea(row.modelData.file)
-              }
-            }
+          Item {
+            width: parent.width
+            implicitHeight: Math.max(handoffText.implicitHeight, handoffSwitch.implicitHeight)
 
             Column {
-              id: ideaRow
+              id: handoffText
               anchors.left: parent.left
-              anchors.right: parent.right
+              anchors.right: handoffSwitch.left
+              anchors.rightMargin: Style.space(10)
               anchors.verticalCenter: parent.verticalCenter
-              anchors.leftMargin: Style.space(6)
-              // The action cluster only reserves room while it is showing, so
-              // a resting row gets the full width for its title.
-              anchors.rightMargin: Style.space(6)
-                + (row.showActions ? actions.width + Style.space(4) : 0)
               spacing: Style.space(2)
 
               Text {
                 width: parent.width
                 textFormat: Text.PlainText
-                text: row.modelData.title
+                text: "Review and Create"
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
-                elide: Text.ElideRight
               }
-
               Text {
                 width: parent.width
                 textFormat: Text.PlainText
-                text: root.relativeTime(row.modelData.mtime)
-                  + (row.rowStatus === "new" ? "" : "  ·  " + row.rowStatus)
-                  + (row.modelData.tags && row.modelData.tags.length
-                     ? "  ·  #" + row.modelData.tags.join(" #") : "")
+                text: root.agentHandoff
+                  ? "Open " + root.agentName() + " in a terminal, after you confirm each one."
+                  : "Off. Sparks only captures, lists, searches and opens ideas."
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
-                elide: Text.ElideRight
+                wrapMode: Text.Wrap
               }
             }
 
-            // Revealed on hover or when the row is the keyboard selection, so
-            // a 380px row isn't permanently five icons wide.
-            Row {
-              id: actions
+            ToggleSwitch {
+              id: handoffSwitch
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              anchors.rightMargin: Style.space(4)
-              spacing: Style.space(2)
-              visible: row.showActions
-
-              PanelActionButton {
-                iconText: "󰧑"
-                tooltipText: row.rowStatus === "new"
-                  ? "Research this into a brief with your agent"
-                  : "Re-review with your agent"
-                foreground: root.dim
-                hoverColor: root.accent
-                fontFamily: root.fontFamily
-                onClicked: root.reviewIdea(row.modelData.file)
-              }
-
-              PanelActionButton {
-                visible: row.modelData.project === "" && row.rowStatus === "planned"
-                iconText: "󰐊"
-                tooltipText: "Create it — a workspace, and your agent to start in it"
-                foreground: root.dim
-                hoverColor: root.accent
-                fontFamily: root.fontFamily
-                onClicked: root.createIdea(row.modelData.file)
-              }
-
-              PanelActionButton {
-                visible: row.modelData.project !== ""
-                iconText: "󰝰"
-                tooltipText: "Open " + row.modelData.project
-                foreground: root.dim
-                hoverColor: root.accent
-                fontFamily: root.fontFamily
-                onClicked: root.openProject(row.modelData.project)
-              }
-
-              PanelActionButton {
-                visible: row.rowStatus !== "done" && row.rowStatus !== "archived"
-                iconText: "󰗠"
-                tooltipText: "Mark done"
-                foreground: root.dim
-                hoverColor: root.accent
-                fontFamily: root.fontFamily
-                onClicked: root.setStatus(row.modelData.file, "done")
-              }
-
-              PanelActionButton {
-                iconText: row.rowStatus === "archived" ? "󰑐" : "󱉙"
-                tooltipText: row.rowStatus === "archived" ? "Restore" : "Archive"
-                foreground: root.dim
-                hoverColor: root.accent
-                fontFamily: root.fontFamily
-                onClicked: root.setStatus(row.modelData.file,
-                  row.rowStatus === "archived" ? "new" : "archived")
-              }
-
-              PanelActionButton {
-                iconText: "󰆴"
-                tooltipText: "Delete"
-                foreground: root.dim
-                hoverColor: Color.urgent
-                fontFamily: root.fontFamily
-                onClicked: root.requestDelete(row.modelData.file)
-              }
+              checked: root.agentHandoff
+              busy: settingsProc.running
+              foreground: root.foreground
+              accent: root.accent
+              onToggled: root.writeSetting("agentHandoff", root.agentHandoff ? "false" : "true", true)
             }
           }
-        }
 
-        PanelSeparator { width: parent.width }
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: "Mode"
+            color: root.agentHandoff ? root.foreground : root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
 
-        Row {
-          width: parent.width
-          spacing: Style.space(8)
-
-          Button {
-            text: "Open folder"
-            iconText: "󰉋"
-            bordered: true
-            focusable: false
+          ButtonGroup {
+            width: parent.width
+            enabled: root.agentHandoff
+            opacity: enabled ? 1 : 0.5
+            options: root.modeOptions
+            value: root.agentMode
             foreground: root.foreground
             accent: root.accent
             fontFamily: root.fontFamily
-            tooltipText: root.ideasDir
-            onClicked: root.openIdeasFolder()
+            fontSize: Style.font.bodySmall
+            focusable: false
+            onChanged: function(value) { root.requestMode(value) }
+          }
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: root.modeCaption(root.agentMode)
+            color: root.agentMode === "auto" && root.agentHandoff ? Color.urgent : root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.Wrap
+          }
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            visible: root.agentHandoff
+            text: "Each handoff opens " + root.agentName() + " in a terminal you can watch. It is given the "
+              + "idea's text, your ideas folder and the skill to follow, and sends what it reads to that "
+              + "agent's provider. Sparks makes no network calls itself and runs nothing in the background."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.Wrap
+          }
+
+          PanelSeparator { width: parent.width }
+          PanelSectionHeader {
+            text: "FOLDERS"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: "Ideas"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+          TextField {
+            id: ideasDirField
+            width: parent.width
+            text: root.ideasDirRaw
+            foreground: root.foreground
+            accent: root.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            onAccepted: root.applyFolder("ideasDir", ideasDirField, root.ideasDirRaw)
+            Keys.onEscapePressed: { text = root.ideasDirRaw; focus = false }
+          }
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: "Workspaces (where Create scaffolds)"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+          TextField {
+            id: projectsDirField
+            width: parent.width
+            text: root.setting("projectsDir", "~/Work")
+            foreground: root.foreground
+            accent: root.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            onAccepted: root.applyFolder("projectsDir", projectsDirField, root.setting("projectsDir", "~/Work"))
+            Keys.onEscapePressed: { text = root.setting("projectsDir", "~/Work"); focus = false }
+          }
+
+          Text {
+            width: parent.width
+            textFormat: Text.PlainText
+            text: "Press Enter to save a folder. Each control here writes its own key to this widget's entry "
+              + "in ~/.config/omarchy/shell.json the moment you use it. Sparks changes nothing there on its own."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.Wrap
           }
         }
       }
@@ -649,13 +984,13 @@ Panel {
         anchors.fill: parent
         z: 10
         opened: false
-        message: "Delete this idea? This can't be undone."
-        confirmText: "Delete"
+        message: root.confirmMessage()
+        confirmText: root.confirmLabel()
         cancelText: "Cancel"
         foreground: root.foreground
         fontFamily: root.fontFamily
-        onCanceled: { confirmDialog.opened = false; root.pendingDeleteFile = "" }
-        onConfirmed: root.confirmDelete()
+        onCanceled: root.cancelPending()
+        onConfirmed: root.confirmPending()
       }
     }
   }
