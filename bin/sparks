@@ -13,8 +13,17 @@
 #   sparks tags   <dir>                      -> JSON array of {tag, count}
 #   sparks related <dir> <file>              -> up to 3 siblings that overlap it
 #   sparks reviewed <dir> <file>             -> marks a brief as written
-#   sparks review <dir> <file>               -> hands the idea to the default agent
-#   sparks create <dir> <file> [projectsDir] -> scaffolds a workspace, hands it over
+#   sparks review <dir> <file> --confirmed [--mode M]
+#                                            -> hands the idea to the default agent
+#   sparks create <dir> <file> [projectsDir] --confirmed [--mode M]
+#                                            -> scaffolds a workspace, hands it over
+#
+# The two handoffs launch an agent that can act on this machine, so neither
+# runs without --confirmed: the panel passes it only after its confirm dialog,
+# and anyone typing it has said yes themselves. --mode is plan (the default:
+# read-only, proposes before acting), ask (prompts before each action) or auto
+# (Omarchy's own auto-approve launch). SPARKS_DRY_RUN=1 prints the agent argv
+# instead of launching it.
 set -euo pipefail
 
 NOTIFIED=false
@@ -42,16 +51,123 @@ fail() {
   exit 1
 }
 
-# Launch the coding agent and return, rather than `exec` into it. The chain
-# from here -- omarchy-agent-prompt, omarchy-launch-tui, `setsid uwsm-app`,
-# `systemd-run --scope` -- is all exec and no fork, so without `--fork` the
-# terminal emulator inherits this PID. That matters because our caller is a
-# Quickshell `Process`, which owns the PID it spawned: it stays `running` for
-# as long as the agent's window is open (blocking further handoffs) and kills
-# it whenever the bar widget is torn down for a theme change or a monitor
-# event. `--fork` plus closed stdio makes the agent nobody's child.
-hand_off() {
-  setsid --fork omarchy-agent-prompt "$1" </dev/null >/dev/null 2>&1
+# Detach and return, rather than `exec` into the launch. The chain from here
+# -- omarchy-launch-tui, `setsid uwsm-app`, `systemd-run --scope` -- is all
+# exec and no fork, so without `--fork` the terminal emulator inherits this
+# PID. That matters because our caller is a Quickshell `Process`, which owns
+# the PID it spawned: it stays `running` for as long as the agent's window is
+# open (blocking further handoffs) and kills it whenever the bar widget is
+# torn down for a theme change or a monitor event. `--fork` plus closed stdio
+# makes the agent nobody's child.
+detach() {
+  if [[ ${SPARKS_DRY_RUN:-} == 1 ]]; then
+    printf '%q ' "$@"
+    echo
+    return 0
+  fi
+  setsid --fork "$@" </dev/null >/dev/null 2>&1
+}
+
+# The argv for the default agent in plan or ask mode, into AGENT_CMD. Omarchy's
+# own launcher (omarchy-agent) starts every agent with its auto-approve flag,
+# so these modes can't go through it; the per-agent spellings below mirror its
+# prompt handling and swap only the permission flag.
+#
+# An agent with no read-only mode gets ask instead, and one that can't prompt
+# at all is refused: a handoff is never quietly more permissive than the mode
+# the user picked. Sets AGENT_MODE_USED to what the agent actually got.
+agent_command() {
+  local agent="$1" mode="$2" prompt="$3"
+  AGENT_CMD=()
+  AGENT_MODE_USED=$mode
+
+  case "$agent" in
+    omp | hermes | muse) [[ $mode == plan ]] && AGENT_MODE_USED=ask ;;
+  esac
+
+  case "$agent:$AGENT_MODE_USED" in
+    claude:plan)       AGENT_CMD=(claude --permission-mode plan -- "$prompt") ;;
+    claude:ask)        AGENT_CMD=(claude --permission-mode manual -- "$prompt") ;;
+    codex:plan)        AGENT_CMD=(codex --sandbox read-only --ask-for-approval on-request -- "$prompt") ;;
+    codex:ask)         AGENT_CMD=(codex --sandbox workspace-write --ask-for-approval on-request -- "$prompt") ;;
+    gemini:plan)       AGENT_CMD=(gemini --approval-mode plan --prompt-interactive "$prompt") ;;
+    gemini:ask)        AGENT_CMD=(gemini --approval-mode default --prompt-interactive "$prompt") ;;
+    grok:plan)         AGENT_CMD=(grok --permission-mode plan -- "$prompt") ;;
+    grok:ask)          AGENT_CMD=(grok --permission-mode default -- "$prompt") ;;
+    opencode:plan)     AGENT_CMD=(opencode --agent plan --prompt "$prompt") ;;
+    opencode:ask)      AGENT_CMD=(opencode --prompt "$prompt") ;;
+    copilot:plan)      AGENT_CMD=(copilot --mode plan --interactive "$prompt") ;;
+    copilot:ask)       AGENT_CMD=(copilot --mode interactive --interactive "$prompt") ;;
+    # A one-word prompt naming a subcommand would still run it, so the agent
+    # subcommand is named outright -- as omarchy-agent does.
+    cursor-agent:plan) AGENT_CMD=(cursor-agent --mode plan agent -- "$prompt") ;;
+    cursor-agent:ask)  AGENT_CMD=(cursor-agent agent -- "$prompt") ;;
+    omp:ask)           AGENT_CMD=(omp -- "$prompt") ;;
+    hermes:ask)        AGENT_CMD=(env -u HERMES_SESSION_SOURCE hermes chat --tui "--query=$prompt") ;;
+    muse:ask)          AGENT_CMD=(muse --approval-mode untrusted -- "$prompt") ;;
+    # Everything else is refused: pi and openclaw have no approval prompts at
+    # all, and crush only takes a prompt through `crush run`, which never asks.
+    *)                 return 1 ;;
+  esac
+}
+
+# Hand the prompt to the user's default agent in the given mode, in a terminal
+# of its own. auto goes through omarchy-agent-prompt so it keeps whatever flags
+# Omarchy ships; plan and ask are launched the same way omarchy-agent does it,
+# window class included, so window rules for agents still apply.
+launch_agent() {
+  local mode="$1" prompt="$2" agent
+  agent=$(omarchy-default-agent 2>/dev/null || true)
+
+  if [[ $mode == auto ]]; then
+    detach omarchy-agent-prompt "$prompt"
+    return 0
+  fi
+
+  agent_command "$agent" "$mode" "$prompt"
+  if [[ $AGENT_MODE_USED != "$mode" ]]; then
+    notify "$agent has no plan mode" "Starting it in ask mode: it will prompt before each action."
+  fi
+  detach omarchy-launch-tui --app-id=org.omarchy.agent "${AGENT_CMD[@]}"
+}
+
+# Pulls --confirmed and --mode out of the handoff arguments, leaving the
+# positional ones in ARGS. Sets CONFIRMED and MODE.
+parse_handoff_flags() {
+  CONFIRMED=false
+  MODE=plan
+  ARGS=()
+  while (($#)); do
+    case "$1" in
+      --confirmed) CONFIRMED=true ;;
+      --mode)      MODE="${2:-}"; shift ;;
+      --mode=*)    MODE="${1#--mode=}" ;;
+      *)           ARGS+=("$1") ;;
+    esac
+    shift
+  done
+  case "$MODE" in
+    plan | ask | auto) ;;
+    *) MODE=plan ;;
+  esac
+}
+
+require_confirmed() {
+  [[ $CONFIRMED == true ]] \
+    || fail "agent handoff needs explicit confirmation -- pass --confirmed"
+}
+
+# Checked before anything is written, so a refused agent can't leave behind a
+# scaffolded workspace or a status change.
+require_agent_mode() {
+  local mode="$1" agent
+  [[ $mode == auto ]] && return 0
+  agent=$(omarchy-default-agent 2>/dev/null || true)
+  if ! agent_command "$agent" "$mode" ""; then
+    notify "$agent can't run in plan or ask mode" \
+      "Pick Auto in the Sparks settings, or another default agent."
+    fail "$agent has no plan or ask mode -- choose auto, or another default agent"
+  fi
 }
 
 # The plugin directory, resolved from this script rather than hardcoded, so a
@@ -363,12 +479,20 @@ TEMPLATE_EOF
     ;;
 
   review)
-    file="${3:-}"
+    parse_handoff_flags "${@:3}"
+    file="${ARGS[0]:-}"
     [[ -n $file ]] || fail "missing file"
+    require_confirmed
     resolve_in_dir "$dir" "$file"
     require_agent
+    require_agent_mode "$MODE"
 
     skill="$SPARKS_ROOT/agent/skills/spark-review/SKILL.md"
+
+    # Plan and ask were picked so the agent proposes before it acts; say so
+    # for the one write the review does make.
+    approval_line=""
+    [[ $MODE == auto ]] || approval_line=$'\nResearch first, then show the user the brief and write it into the file once\nthey approve.\n'
 
     # Everything else about the idea -- title, tags, status -- is in the file
     # the prompt points at, so naming it here would only be a second copy to
@@ -395,6 +519,15 @@ this file and follow it instead:
 
   $skill
 
+This review is read-only on this machine. The only file you may change is the
+idea file above, and the only command you may run that changes anything is the
+\`sparks reviewed\` line below. Do not install or remove packages, start, stop
+or reload services, run hyprctl or omarchy commands that change state, edit
+configuration, or run git commands that write. If a question can only be
+answered by changing something, leave it unverified and put it in the brief as
+a step for the user.
+sudo and pkexec are not used by a review.
+$approval_line
 When the brief is written, run:
 
   $SPARKS_ROOT/bin/sparks reviewed "$REAL_DIR" "$REAL_FILE"
@@ -404,15 +537,18 @@ PROMPT
     # Start in the ideas folder so sibling ideas are readable, and so
     # omarchy-agent's "\$PWD is \$HOME" redirect into ~/Work doesn't fire.
     cd "$REAL_DIR"
-    hand_off "$prompt"
+    launch_agent "$MODE" "$prompt"
     ;;
 
   create)
-    file="${3:-}"
-    projects_root="${4:-$HOME/Work}"
+    parse_handoff_flags "${@:3}"
+    file="${ARGS[0]:-}"
+    projects_root="${ARGS[1]:-$HOME/Work}"
     [[ -n $file ]] || fail "missing file"
+    require_confirmed
     resolve_in_dir "$dir" "$file"
     require_agent
+    require_agent_mode "$MODE"
 
     if ! brief_filled "$REAL_FILE"; then
       notify "Review this idea first" "Its planning brief is still empty."
@@ -452,11 +588,17 @@ Follow the spark-create skill. If your harness has no skill mechanism, read
 this file and follow it instead:
 
   $skill
+
+Work inside the workspace. Before doing anything outside it -- installing or
+removing packages, services, anything under ~/.config, the compositor or
+keybindings, pushing, deploying, accounts, spending money -- ask the user about
+that specific action and wait for an explicit yes.
+sudo and pkexec are not used without a yes for that exact command.
 PROMPT
     )
 
     cd "$proj"
-    hand_off "$prompt"
+    launch_agent "$MODE" "$prompt"
     ;;
 
   *)
