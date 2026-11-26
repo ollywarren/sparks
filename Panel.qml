@@ -496,7 +496,9 @@ Panel {
     open: root.opened
     focusTarget: searchField
     contentWidth: panel.fittedContentWidth(Style.space(root.panelWidth))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(560))
+    readonly property int maxHeight: Style.space(560)
+    readonly property real maxBodyHeight: fittedContentHeight(maxHeight, maxHeight) - verticalContentInset
+    contentHeight: panel.fittedContentHeight(column.implicitHeight, maxHeight)
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -610,34 +612,46 @@ Panel {
           }
 
           // ---------------------------------------------------- tag chips
-          Flow {
+          Flickable {
+            id: tagScroll
             width: parent.width
-            spacing: Style.space(6)
+            height: Math.min(tagFlow.implicitHeight, Style.space(96))
+            contentWidth: width
+            contentHeight: tagFlow.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
             visible: root.tagCounts.length > 0
+            ScrollBar.vertical: ScrollBar {}
 
-            Button {
-              text: "All"
-              bordered: true
-              focusable: false
-              selected: root.activeTag === ""
-              foreground: root.foreground
-              accent: root.accent
-              fontFamily: root.fontFamily
-              onClicked: root.activeTag = ""
-            }
+            Flow {
+              id: tagFlow
+              width: tagScroll.width
+              spacing: Style.space(6)
 
-            Repeater {
-              model: root.tagCounts
-              delegate: Button {
-                required property var modelData
-                text: "#" + modelData.tag + " " + modelData.count
+              Button {
+                text: "All"
                 bordered: true
                 focusable: false
-                selected: root.activeTag === modelData.tag
+                selected: root.activeTag === ""
                 foreground: root.foreground
                 accent: root.accent
                 fontFamily: root.fontFamily
-                onClicked: root.activeTag = (root.activeTag === modelData.tag ? "" : modelData.tag)
+                onClicked: root.activeTag = ""
+              }
+
+              Repeater {
+                model: root.tagCounts
+                delegate: Button {
+                  required property var modelData
+                  text: "#" + modelData.tag + " " + modelData.count
+                  bordered: true
+                  focusable: false
+                  selected: root.activeTag === modelData.tag
+                  foreground: root.foreground
+                  accent: root.accent
+                  fontFamily: root.fontFamily
+                  onClicked: root.activeTag = (root.activeTag === modelData.tag ? "" : modelData.tag)
+                }
               }
             }
           }
@@ -660,7 +674,12 @@ Panel {
           ListView {
             id: listView
             width: parent.width
-            height: Math.min(contentHeight, Style.space(360))
+            // Only y and the footer feed this, never column.implicitHeight,
+            // which would make the binding depend on its own result.
+            height: Math.min(contentHeight, Math.max(Style.space(80),
+              panel.maxBodyHeight - listPage.y - y - footerSeparator.height
+              - footer.height - listPage.spacing * 2))
+            ScrollBar.vertical: ScrollBar {}
             model: root.filteredIdeas
             spacing: Style.space(4)
             clip: true
@@ -804,9 +823,10 @@ Panel {
             }
           }
 
-          PanelSeparator { width: parent.width }
+          PanelSeparator { id: footerSeparator; width: parent.width }
 
           Row {
+            id: footer
             width: parent.width
             spacing: Style.space(8)
 
